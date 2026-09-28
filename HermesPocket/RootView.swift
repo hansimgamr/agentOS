@@ -106,7 +106,7 @@ struct RootView: View {
                             openConversation(session.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(session.title).lineLimit(1)
+                                Text("🪽 \(session.title)").lineLimit(1)
                                 if let date = session.lastActive {
                                     Text(ChatTimestamp.label(date))
                                         .font(.caption2).foregroundStyle(.secondary)
@@ -317,11 +317,11 @@ private struct MessageRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
-                        Text(isUser ? "You" : "Hermes").fontWeight(.semibold)
+                        Text(isUser ? "You" : "Hermes 🪽").fontWeight(.semibold)
                         if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(isUser ? "You" : "Hermes").fontWeight(.semibold)
+                        Text(isUser ? "You" : "Hermes 🪽").fontWeight(.semibold)
                         if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
                     }
                 }
