@@ -19,7 +19,7 @@ def main():
         subprocess.run(["swift", str(Path(__file__).with_name("qr.swift")), url, str(image)], check=True)
         image.chmod(0o600)
         subprocess.run(["open", str(image)], check=True)
-        print("Scan the QR code with iPhone Camera within five minutes. It opens Hermes Pocket and pairs this device.")
+        print("Scan the QR code with iPhone Camera within five minutes. It opens agentOS and pairs this device.")
     elif args.action == "list":
         for device in credentials.list_devices():
             print(device["id"], device["name"])

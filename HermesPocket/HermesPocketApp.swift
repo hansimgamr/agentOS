@@ -29,7 +29,7 @@ private struct ProtectedRoot: View {
             } else {
                 VStack(spacing: 20) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 48)).foregroundStyle(.indigo)
-                    Text("Hermes Pocket is locked").font(.title2.bold())
+                    Text("agentOS is locked").font(.title2.bold())
                     Text("Unlock with Face ID, Touch ID or your device passcode.").foregroundStyle(.secondary)
                     if let unlockError { Text(unlockError).font(.footnote).foregroundStyle(.red) }
                     Button("Unlock") { Task { await unlock() } }
@@ -59,7 +59,7 @@ private struct ProtectedRoot: View {
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            unlockError = "Set a device passcode to protect Hermes Pocket."
+            unlockError = "Set a device passcode to protect agentOS."
             return
         }
         do {

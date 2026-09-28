@@ -150,10 +150,16 @@ private struct ChatView: View {
                 messages
             }
         }
-        .navigationTitle(store.selectedSession?.title ?? "Hermes Pocket")
+        .background(Color(uiColor: .systemBackground))
+        .navigationTitle(store.selectedSession?.title ?? "agentOS")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.isConnected { composer.padding(.horizontal).padding(.top, 8).padding(.bottom, 6).background(.bar) }
+            if store.isConnected {
+                composer
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color(uiColor: .systemBackground))
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -234,24 +240,23 @@ private struct ChatView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                    Image(systemName: "photo").font(.title3).frame(width: 38, height: 38)
+                    Image(systemName: "photo").font(.title3).frame(minWidth: 44, minHeight: 44)
                 }.accessibilityLabel("Attach a photo")
                 TextField("Message Hermes…", text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
-                    .lineLimit(1...5).textInputAutocapitalization(.sentences).padding(10)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+                    .lineLimit(1...5)
+                    .textInputAutocapitalization(.sentences)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Message Hermes")
                     .onSubmit { Task { await store.send() } }
-                Button { voice.start() } label: { Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic").font(.title3).frame(width: 38, height: 38) }
+                Button { if voice.isRecording { voice.stop() } else { voice.start() } } label: { Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic").font(.title3).frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel(voice.isRecording ? "Stop dictation" : "Dictate message")
                 Button { if store.isSending { store.stop() } else { Task { await store.send() } } } label: {
-                    Image(systemName: store.isSending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.title).frame(width: 38, height: 38)
+                    Image(systemName: store.isSending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.title).frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(!store.isSending && store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.pendingImage == nil)
                 .accessibilityLabel(store.isSending ? "Stop response" : "Send message")
             }
         }
-        .padding(10)
-        .background(.background, in: RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.quaternary, lineWidth: 1))
         .frame(maxWidth: 900)
         .frame(maxWidth: .infinity)
     }
@@ -314,7 +319,7 @@ private struct SettingsView: View {
                     #if targetEnvironment(simulator)
                     SecureField("API server key", text: $apiKey).textInputAutocapitalization(.never).autocorrectionDisabled()
                     #else
-                    Text(KeychainStore.read() == nil ? "Scan the pairing QR code shown on your Mac with iPhone Camera. Hermes Pocket will open and pair automatically." : "This iPhone has its own revocable access. The Mac's Hermes key stays on the Mac.")
+                    Text(KeychainStore.read() == nil ? "Scan the pairing QR code shown on your Mac with iPhone Camera. agentOS will open and pair automatically." : "This iPhone has its own revocable access. The Mac's Hermes key stays on the Mac.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if KeychainStore.read() != nil {
                         Button { Task { rotating = true; await store.rotateDeviceKey(); rotating = false } } label: {
