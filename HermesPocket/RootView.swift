@@ -254,7 +254,8 @@ private struct ChatView: View {
                 TextField("Message Hermes…", text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
                     .lineLimit(1...5)
                     .textInputAutocapitalization(.sentences)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(.vertical, 10)
                     .accessibilityLabel("Message Hermes")
                     .onSubmit { Task { await store.send() } }
                 Button { if voice.isRecording { voice.stop() } else { voice.start() } } label: { Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic").font(.title3).frame(minWidth: 44, minHeight: 44) }
