@@ -7,6 +7,8 @@ private enum MainTab: Hashable { case chats, settings }
 struct RootView: View {
     @Environment(ChatStore.self) private var store
     @State private var selectedTab: MainTab = .chats
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var chatPath: [String] = []
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var selectedPhoto: PhotosPickerItem?
 
@@ -34,8 +36,31 @@ struct RootView: View {
         }
     }
 
-    private var chats: some View {
-        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+    @ViewBuilder private var chats: some View {
+        if horizontalSizeClass == .compact {
+            NavigationStack(path: $chatPath) {
+                conversationList
+                    .navigationDestination(for: String.self) { id in
+                        ChatView(selectedTab: $selectedTab, selectedPhoto: $selectedPhoto)
+                            .task(id: id) {
+                                if let session = store.sessions.first(where: { $0.id == id }) {
+                                    await store.select(session)
+                                }
+                            }
+                    }
+            }
+            .toolbar(chatPath.isEmpty ? .visible : .hidden, for: .tabBar)
+        } else {
+            NavigationSplitView(preferredCompactColumn: $compactColumn) {
+                conversationList
+            } detail: {
+                ChatView(selectedTab: $selectedTab, selectedPhoto: $selectedPhoto)
+            }
+            .navigationSplitViewStyle(.balanced)
+        }
+    }
+
+    private var conversationList: some View {
             List(selection: Binding(get: { store.selectedSessionID }, set: { id in
                 guard let session = store.sessions.first(where: { $0.id == id }) else { return }
                 Task { await store.select(session) }
@@ -73,22 +98,20 @@ struct RootView: View {
                 }
             }
             .navigationTitle("Chats")
-            .toolbar(.visible, for: .tabBar)
-        } detail: {
-            ChatView(selectedTab: $selectedTab, selectedPhoto: $selectedPhoto)
-        }
-        .navigationSplitViewStyle(.balanced)
     }
 
     private func startConversation() async {
         await store.createSession()
-        if store.error == nil { compactColumn = .detail }
+        if store.error == nil, let id = store.selectedSessionID {
+            if horizontalSizeClass == .compact { chatPath.append(id) }
+            else { compactColumn = .detail }
+        }
     }
 }
 
 private struct ChatView: View {
     @Environment(ChatStore.self) private var store
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var showingApproval = false
     @State private var voice = VoiceTranscriber()
     @Binding var selectedTab: MainTab
     @Binding var selectedPhoto: PhotosPickerItem?
@@ -118,7 +141,6 @@ private struct ChatView: View {
         }
         .navigationTitle(store.selectedSession?.title ?? "Hermes Pocket")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(horizontalSizeClass == .compact ? .hidden : .visible, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if store.isConnected { composer.padding(.horizontal).padding(.top, 8).padding(.bottom, 6).background(.bar) }
         }
@@ -133,6 +155,21 @@ private struct ChatView: View {
         }
         .onChange(of: voice.transcript) { _, text in if !text.isEmpty { store.draft = text } }
         .onDisappear { voice.stop() }
+        .onChange(of: store.pendingApproval?.id, initial: true) { _, id in
+            showingApproval = id != nil
+        }
+        .confirmationDialog("Hermes needs your approval", isPresented: $showingApproval,
+                            titleVisibility: .visible, presenting: store.pendingApproval) { approval in
+            if approval.choices.contains("once") {
+                Button("Allow once") { Task { await store.respondToApproval("once") } }
+            }
+            if approval.choices.contains("deny") {
+                Button("Deny", role: .destructive) { Task { await store.respondToApproval("deny") } }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { approval in
+            Text(approval.summary)
+        }
     }
 
     private var messages: some View {
@@ -151,23 +188,10 @@ private struct ChatView: View {
                         HStack(spacing: 8) { ProgressView(); Text("Using \(activity)…").font(.footnote).foregroundStyle(.secondary) }
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if let approval = store.pendingApproval {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Label("Hermes needs your approval", systemImage: "hand.raised.fill").font(.headline)
-                            Text(approval.summary).font(.callout).textSelection(.enabled)
-                            HStack {
-                                if approval.choices.contains("once") {
-                                    Button("Allow once") { Task { await store.respondToApproval("once") } }
-                                        .buttonStyle(.borderedProminent)
-                                }
-                                if approval.choices.contains("deny") {
-                                    Button("Deny", role: .destructive) { Task { await store.respondToApproval("deny") } }
-                                        .buttonStyle(.bordered)
-                                }
-                            }
+                    if store.pendingApproval != nil {
+                        Button("Review Hermes request", systemImage: "hand.raised") {
+                            showingApproval = true
                         }
-                        .padding().frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 16))
                     }
                 }
                 .frame(maxWidth: 820, alignment: .leading)
@@ -228,15 +252,12 @@ private struct MessageRow: View {
 
     var body: some View {
         HStack {
-            if isUser { Spacer(minLength: 35) }
             VStack(alignment: .leading, spacing: 6) {
                 Text(isUser ? "You" : "Hermes").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 MessageBody(text: message.content)
                 if message.isStreaming && message.content.isEmpty { ProgressView().controlSize(.small) }
             }
-            .padding(13)
-            .background(isUser ? Color.indigo.opacity(0.1) : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
-            if !isUser { Spacer(minLength: 35) }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .textSelection(.enabled)
     }
