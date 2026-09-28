@@ -126,6 +126,15 @@ struct HermesAPI: Sendable {
         }
     }
 
+    func deleteSession(id: String) async throws {
+        let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let (data, response) = try await Self.session.data(for: request("/api/sessions/\(encoded)", method: "DELETE"))
+        if (response as? HTTPURLResponse)?.statusCode == 404 { return }
+        try check(response, data: data)
+        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              result["deleted"] as? Bool == true else { throw HermesError.malformedResponse }
+    }
+
     func createSession() async throws -> ChatSession {
         let data = try await post("/api/sessions", json: ["title": "New conversation"])
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],

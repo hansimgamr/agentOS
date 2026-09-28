@@ -6,6 +6,8 @@ private enum MainTab: Hashable { case chats, settings }
 
 struct RootView: View {
     @Environment(ChatStore.self) private var store
+    @State private var chatToDelete: ChatSession?
+    @State private var deletionError: String?
     @State private var selectedTab: MainTab = .chats
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var chatPath: [String] = []
@@ -21,6 +23,28 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(MainTab.settings)
         }
+        .confirmationDialog("Delete conversation?", isPresented: Binding(
+            get: { chatToDelete != nil }, set: { if !$0 { chatToDelete = nil } }
+        ), titleVisibility: .visible, presenting: chatToDelete) { session in
+            Button("Delete", role: .destructive) {
+                Task {
+                    do {
+                        try await store.deleteSession(session.id)
+                        if !store.sessions.contains(where: { $0.id == session.id }) {
+                            chatPath.removeAll { $0 == session.id }
+                            compactColumn = .sidebar
+                        }
+                    } catch { deletionError = error.localizedDescription }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { session in
+            Text("Delete “\(session.title)” and its messages from Hermes? This cannot be undone.")
+        }
+        .alert("Couldn’t delete conversation", isPresented: Binding(
+            get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
+        )) { Button("OK", role: .cancel) { deletionError = nil } }
+        message: { Text(deletionError ?? "") }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task {
@@ -94,6 +118,13 @@ struct RootView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens conversation")
+                        .disabled(store.deletingSessionIDs.contains(session.id))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { chatToDelete = session } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .disabled(store.isSending || store.deletingSessionIDs.contains(session.id))
+                        }
                     }
                 } header: {
                     HStack {

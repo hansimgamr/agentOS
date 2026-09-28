@@ -19,6 +19,7 @@ final class ChatStore {
     var selectedSessionID: String?
     var messages: [ChatMessage] = []
     var isConnected = false
+    var deletingSessionIDs: Set<String> = []
     var isSending = false
     var status = "Connect to your Hermes agent"
     var error: String?
@@ -101,6 +102,23 @@ final class ChatStore {
             status = "Device access rotated"
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+
+    func deleteSession(_ id: String) async throws {
+        guard !isSending, !deletingSessionIDs.contains(id) else { return }
+        guard let api else { throw HermesError.missingKey }
+        deletingSessionIDs.insert(id)
+        defer { deletingSessionIDs.remove(id) }
+        try await api.deleteSession(id: id)
+        sessions.removeAll { $0.id == id }
+        if selectedSessionID == id {
+            selectedSessionID = nil
+            messages = []
+            pendingApproval = nil
+            toolActivity = nil
+            draft = ""
+            pendingImage = nil
+        }
     }
 
     func createSession() async {

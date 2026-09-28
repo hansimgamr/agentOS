@@ -17,6 +17,7 @@ LISTEN = ("fixture-mac.local", 8643)
 PRIVATE = Path.home() / ".hermes"
 SKIP = {"connection", "content-length", "host", "keep-alive", "proxy-connection", "transfer-encoding"}
 ROUTES = {
+    "DELETE": (r"/api/sessions/[A-Za-z0-9_.-]+",),
     "GET": (r"/health", r"/api/sessions", r"/api/sessions/[A-Za-z0-9_.-]+/messages"),
     "POST": (r"/api/sessions", r"/api/sessions/[A-Za-z0-9_.-]+/chat/stream",
              r"/v1/runs/[A-Za-z0-9_.-]+/approval"),
@@ -57,7 +58,7 @@ class Bridge(BaseHTTPRequestHandler):
         self.send_error(405)
 
     def do_DELETE(self):
-        self.send_error(405)
+        self.forward()
 
     def json_response(self, status, value):
         data = json.dumps(value).encode("utf-8")
