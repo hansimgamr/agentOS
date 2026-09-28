@@ -123,6 +123,7 @@ struct RootView: View {
                             Button(role: .destructive) { chatToDelete = session } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                            .tint(.red)
                             .disabled(store.isSending || store.deletingSessionIDs.contains(session.id))
                         }
                     }
@@ -376,8 +377,27 @@ private struct SettingsView: View {
                         Text("Dark").tag("dark")
                     }
                 }
-                Section("Hermes API") {
-                    TextField("https://your-mac.example:8642", text: $endpoint)
+                Section("Connection") {
+                    HStack(spacing: 12) {
+                        if checking {
+                            ProgressView().accessibilityLabel("Connecting")
+                        } else {
+                            Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(store.isConnected ? .green : .red)
+                                .accessibilityHidden(true)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(checking ? "Connecting…" : store.isConnected ? "Connected" : "Not connected")
+                                .font(.headline)
+                            if !store.status.isEmpty {
+                                Text(store.status).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    TextField("https://your-mac.example:8643", text: $endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     #if targetEnvironment(simulator)
                     SecureField("API server key", text: $apiKey).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -390,13 +410,11 @@ private struct SettingsView: View {
                         }.disabled(rotating)
                     }
                     #endif
-                }
-                Section {
                     Button { Task { await saveAndConnect() } } label: {
-                        HStack { if checking { ProgressView() }; Text("Save and connect") }
-                            .frame(maxWidth: .infinity)
-                    }.disabled(checking || endpoint.isEmpty || !canConnect)
-                    if !store.status.isEmpty { Text(store.status).font(.footnote).foregroundStyle(.secondary) }
+                        Label(checking ? "Connecting…" : "Save and connect", systemImage: "arrow.triangle.2.circlepath")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .disabled(checking || endpoint.isEmpty || !canConnect)
                 }
             }
             .navigationTitle("Settings")
