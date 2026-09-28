@@ -61,10 +61,7 @@ struct RootView: View {
     }
 
     private var conversationList: some View {
-            List(selection: Binding(get: { store.selectedSessionID }, set: { id in
-                guard let session = store.sessions.first(where: { $0.id == id }) else { return }
-                Task { await store.select(session) }
-            })) {
+            List {
                 Section {
                     if store.sessions.isEmpty {
                         Button {
@@ -81,12 +78,18 @@ struct RootView: View {
                         }
                     }
                     ForEach(store.sessions) { session in
-                        NavigationLink(value: session.id) {
+                        Button {
+                            openConversation(session.id)
+                        } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(session.title).lineLimit(1)
                                 if !session.preview.isEmpty { Text(session.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens conversation")
                     }
                 } header: {
                     HStack {
@@ -100,11 +103,19 @@ struct RootView: View {
             .navigationTitle("Chats")
     }
 
+    private func openConversation(_ id: String) {
+        if horizontalSizeClass == .compact {
+            chatPath = [id]
+        } else if let session = store.sessions.first(where: { $0.id == id }) {
+            compactColumn = .detail
+            Task { await store.select(session) }
+        }
+    }
+
     private func startConversation() async {
         await store.createSession()
         if store.error == nil, let id = store.selectedSessionID {
-            if horizontalSizeClass == .compact { chatPath.append(id) }
-            else { compactColumn = .detail }
+            openConversation(id)
         }
     }
 }
