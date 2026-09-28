@@ -151,9 +151,12 @@ final class ChatStore {
             }
         }
         guard let sessionID = selectedSessionID else { isSending = false; error = HermesError.noSession.localizedDescription; return }
-        let user = ChatMessage(role: .user, content: text.isEmpty ? "[Image]" : text + (image == nil ? "" : "\n[Image]"))
-        let reply = ChatMessage(role: .assistant, content: "", isStreaming: true)
+        let user = ChatMessage(role: .user, content: text.isEmpty ? "[Image]" : text + (image == nil ? "" : "\n[Image]"), timestamp: Date())
+        let reply = ChatMessage(role: .assistant, content: "", isStreaming: true, timestamp: Date())
         messages.append(contentsOf: [user, reply])
+        if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[index].lastActive = user.timestamp
+        }
         do {
             activeStream = Task { [weak self] in
                 try await api.send(sessionID: sessionID, text: text, image: image) { [weak self] event, payload in

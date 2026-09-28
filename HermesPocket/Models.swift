@@ -19,13 +19,15 @@ struct ChatMessage: Identifiable, Hashable {
     let id: String
     var role: Role
     var content: String
+    var timestamp: Date?
     var isStreaming: Bool = false
 
-    init(id: String = UUID().uuidString, role: Role, content: String, isStreaming: Bool = false) {
+    init(id: String = UUID().uuidString, role: Role, content: String, isStreaming: Bool = false, timestamp: Date? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.isStreaming = isStreaming
+        self.timestamp = timestamp
     }
 }
 
@@ -55,5 +57,17 @@ enum HermesError: LocalizedError {
         case .malformedResponse: "Hermes returned an unreadable response."
         case .noSession: "Create a conversation before sending a message."
         }
+    }
+}
+
+// Keep timestamps compact while avoiding ambiguous dates across years.
+enum ChatTimestamp {
+    static func label(_ date: Date, now: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = Calendar.current.component(.year, from: date) == Calendar.current.component(.year, from: now)
+            ? "MMM d · h:mm a" : "MMM d, yyyy · h:mm a"
+        return formatter.string(from: date)
     }
 }

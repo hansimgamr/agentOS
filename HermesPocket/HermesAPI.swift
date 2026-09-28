@@ -131,7 +131,8 @@ struct HermesAPI: Sendable {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let session = root["session"] as? [String: Any],
               let id = session["id"] as? String else { throw HermesError.malformedResponse }
-        return ChatSession(id: id, title: session["title"] as? String)
+        return ChatSession(id: id, title: session["title"] as? String,
+                           lastActive: (session["last_active"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date())
     }
 
     func messages(sessionID: String) async throws -> [ChatMessage] {
@@ -144,7 +145,8 @@ struct HermesAPI: Sendable {
                   let role = ChatMessage.Role(rawValue: rawRole) else { return nil }
             let content = Self.textContent(row["content"])
             guard !content.isEmpty else { return nil }
-            return ChatMessage(id: row["id"] as? String ?? UUID().uuidString, role: role, content: content)
+            return ChatMessage(id: row["id"] as? String ?? UUID().uuidString, role: role, content: content,
+                               timestamp: (row["timestamp"] as? Double).map { Date(timeIntervalSince1970: $0) })
         }
     }
 

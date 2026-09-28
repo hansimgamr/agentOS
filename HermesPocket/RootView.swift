@@ -83,6 +83,10 @@ struct RootView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(session.title).lineLimit(1)
+                                if let date = session.lastActive {
+                                    Text(ChatTimestamp.label(date))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
                                 if !session.preview.isEmpty { Text(session.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -279,7 +283,17 @@ private struct MessageRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
-                Text(isUser ? "You" : "Hermes").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        Text(isUser ? "You" : "Hermes").fontWeight(.semibold)
+                        if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(isUser ? "You" : "Hermes").fontWeight(.semibold)
+                        if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
+                    }
+                }
+                .font(.caption2).foregroundStyle(.secondary)
                 MessageBody(text: message.content)
                 if message.isStreaming && message.content.isEmpty { ProgressView().controlSize(.small) }
             }
