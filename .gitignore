@@ -1,0 +1,16 @@
+.DS_Store
+.dashboard/
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.key
+*.p12
+*.mobileprovision
+devices.json
+pairing.json
+pair.png
