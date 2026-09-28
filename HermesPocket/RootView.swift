@@ -155,10 +155,9 @@ private struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if store.isConnected {
-                composer
+                composerBar
                     .padding(.horizontal)
                     .padding(.vertical, 8)
-                    .background(Color(uiColor: .systemBackground))
             }
         }
         .toolbar {
@@ -219,6 +218,16 @@ private struct ChatView: View {
             .onChange(of: store.messages.count) { _, _ in
                 if let id = store.messages.last?.id { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) } }
             }
+        }
+    }
+
+    @ViewBuilder private var composerBar: some View {
+        if #available(iOS 26.0, *) {
+            composer.padding(8)
+                .glassEffect(.regular, in: .rect(cornerRadius: 28))
+        } else {
+            composer.padding(8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
         }
     }
 
@@ -309,10 +318,18 @@ private struct SettingsView: View {
     @State private var apiKey = ""
     @State private var checking = false
     @State private var rotating = false
+    @AppStorage("appearance") private var appearance = "system"
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Theme", selection: $appearance) {
+                        Text("Follow System").tag("system")
+                        Text("Light").tag("light")
+                        Text("Dark").tag("dark")
+                    }
+                }
                 Section("Hermes API") {
                     TextField("https://your-mac.example:8642", text: $endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)

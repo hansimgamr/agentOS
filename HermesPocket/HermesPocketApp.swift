@@ -4,12 +4,14 @@ import LocalAuthentication
 @main
 struct HermesPocketApp: App {
     @State private var store = ChatStore()
+    @AppStorage("appearance") private var appearance = "system"
 
     var body: some Scene {
         WindowGroup {
             ProtectedRoot()
                 .environment(store)
                 .tint(.indigo)
+                .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
         }
     }
 }
