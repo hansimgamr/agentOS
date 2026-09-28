@@ -14,3 +14,13 @@ __pycache__/
 devices.json
 pairing.json
 pair.png
+*.pem
+*.pfx
+*.p8
+*.keystore
+*.keychain
+*.keychain-db
+.env-*
+.envrc
+credentials.json
+secrets.json
