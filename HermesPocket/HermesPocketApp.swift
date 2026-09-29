@@ -30,11 +30,11 @@ private struct ProtectedRoot: View {
 
     var body: some View {
         Group {
-            if unlocked {
+            if unlocked || !faceIDEnabled {
                 RootView()
-                    .opacity(scenePhase == .active ? 1 : 0)
-                    .allowsHitTesting(scenePhase == .active)
-                    .accessibilityHidden(scenePhase != .active)
+                    .opacity(!faceIDEnabled || scenePhase == .active ? 1 : 0)
+                    .allowsHitTesting(!faceIDEnabled || scenePhase == .active)
+                    .accessibilityHidden(faceIDEnabled && scenePhase != .active)
             } else {
                 VStack(spacing: 20) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 48)).foregroundStyle(.indigo)
@@ -49,14 +49,16 @@ private struct ProtectedRoot: View {
                 .background(.regularMaterial)
             }
         }
+        .transaction { $0.animation = nil }
         .task { await unlock() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { unlocked = false }
+            if phase == .background { unlocked = !faceIDEnabled }
             else { Task { await unlock() } }
         }
         .onChange(of: faceIDEnabled) { _, enabled in
-            unlocked = false
-            Task { await unlock() }
+            unlocked = !enabled
+            unlockError = nil
+            Task { if enabled { await unlock() } else { await finishPairing() } }
         }
         .onOpenURL { url in
             pendingPairing = url

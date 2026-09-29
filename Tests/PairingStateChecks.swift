@@ -52,6 +52,75 @@ import Foundation
         drafting.isSending = true
         drafting.draft = "sending draft"
         precondition(!drafting.startNewConversation() && drafting.draft == "sending draft")
-        print("Pairing state checks passed: failures preserve profile, success replaces state, stale connect and rotation are ignored")
+
+        let rejected = setup()
+        rejected.selectedSessionID = "old-session"
+        rejected.draft = "retry me"
+        let image = PendingImage(data: Data([1, 2, 3]), mimeType: "image/jpeg")
+        rejected.pendingImage = image
+        PairingTestControl.sendError = URLError(.serverCertificateUntrusted)
+        await rejected.send()
+        precondition(rejected.draft == "retry me" && rejected.pendingImage?.data == image.data)
+        precondition(rejected.messages.isEmpty && !rejected.isSending)
+        precondition(rejected.error?.contains("certificate") == true)
+
+        let partial = setup()
+        partial.selectedSessionID = "old-session"
+        partial.draft = "do not auto-retry"
+        PairingTestControl.sendEvents = [
+            ("run.started", [:]),
+            ("assistant.delta", ["delta": "partial reply"])
+        ]
+        PairingTestControl.sendError = HermesError.streamInterrupted
+        await partial.send()
+        precondition(partial.messages.contains { $0.role == .assistant && $0.content.contains("partial reply") })
+        precondition(!partial.messages.contains { $0.content.contains("saved") })
+        precondition(partial.draft.isEmpty && !partial.isSending)
+
+        let stoppedBeforePost = setup()
+        stoppedBeforePost.draft = "keep before network send"
+        stoppedBeforePost.pendingImage = image
+        PairingTestControl.createSuspended = true
+        let createTask = Task { await stoppedBeforePost.send() }
+        await PairingTestControl.waitForCreate()
+        stoppedBeforePost.stop()
+        PairingTestControl.releaseCreate()
+        await createTask.value
+        precondition(!PairingTestControl.sendCalled)
+        precondition(stoppedBeforePost.draft == "keep before network send")
+        precondition(stoppedBeforePost.pendingImage?.data == image.data && !stoppedBeforePost.isSending)
+
+        let staleSelection = setup()
+        staleSelection.selectedSessionID = "old-session"
+        staleSelection.draft = "message in flight"
+        PairingTestControl.sendEvents = [
+            ("run.started", [:]),
+            ("assistant.delta", ["delta": "partial"])
+        ]
+        PairingTestControl.sendSuspended = true
+        PairingTestControl.sendError = HermesError.streamInterrupted
+        let staleTask = Task { await staleSelection.send() }
+        await PairingTestControl.waitForSend()
+        let beforeSelectionChange = staleSelection.messages
+        staleSelection.selectedSessionID = "other-session"
+        staleSelection.error = "selection changed"
+        PairingTestControl.releaseSend()
+        await staleTask.value
+        precondition(staleSelection.messages == beforeSelectionChange && staleSelection.error == "selection changed")
+
+        let staleDisconnect = setup()
+        staleDisconnect.selectedSessionID = "old-session"
+        staleDisconnect.draft = "message in flight"
+        PairingTestControl.sendEvents = [("run.started", [:])]
+        PairingTestControl.sendSuspended = true
+        PairingTestControl.sendError = HermesError.streamInterrupted
+        let disconnectTask = Task { await staleDisconnect.send() }
+        await PairingTestControl.waitForSend()
+        staleDisconnect.disconnect()
+        PairingTestControl.releaseSend()
+        await disconnectTask.value
+        precondition(staleDisconnect.messages.isEmpty && staleDisconnect.apiKey.isEmpty)
+        precondition(staleDisconnect.error == nil && !staleDisconnect.isSending)
+        print("Pairing state checks passed: pair rollback, send failure recovery, partial stream, stop race, and stale callback guards")
     }
 }

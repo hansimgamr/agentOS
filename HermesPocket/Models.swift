@@ -47,6 +47,7 @@ struct PendingApproval: Identifiable {
 
 enum HermesError: LocalizedError {
     case invalidURL, missingKey, keychainFailure, badResponse(Int, String), malformedResponse, noSession
+    case streamInterrupted, streamFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -56,6 +57,8 @@ enum HermesError: LocalizedError {
         case let .badResponse(code, message): "Hermes returned HTTP \(code): \(message)"
         case .malformedResponse: "Hermes returned an unreadable response."
         case .noSession: "Create a conversation before sending a message."
+        case .streamInterrupted: "The response stream ended before Hermes confirmed completion. Refresh the conversation before retrying."
+        case .streamFailed(let message): message
         }
     }
 }

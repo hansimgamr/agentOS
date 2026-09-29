@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 import Security
 
-private final class RelayTrust: NSObject, URLSessionDelegate {
+private final class RelayTrust: NSObject, URLSessionTaskDelegate {
     private let host: String
     private let fingerprint: String
 
@@ -13,6 +13,16 @@ private final class RelayTrust: NSObject, URLSessionDelegate {
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        evaluate(challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        evaluate(challenge, completionHandler: completionHandler)
+    }
+
+    private func evaluate(_ challenge: URLAuthenticationChallenge,
+                          completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let host = challenge.protectionSpace.host.lowercased()
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
             completionHandler(.performDefaultHandling, nil)
@@ -40,8 +50,9 @@ private final class RelayTrust: NSObject, URLSessionDelegate {
     }
 }
 
-struct HermesAPI: Sendable {
+final class HermesAPI: Sendable {
     private let session: URLSession
+    private let trust: RelayTrust
     let baseURL: URL
     let apiKey: String
 
@@ -60,8 +71,12 @@ struct HermesAPI: Sendable {
         self.apiKey = apiKey
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        self.session = URLSession(configuration: configuration, delegate: RelayTrust(host: host, fingerprint: fingerprint), delegateQueue: nil)
+        let trust = RelayTrust(host: host, fingerprint: fingerprint)
+        self.trust = trust
+        self.session = URLSession(configuration: configuration, delegate: trust, delegateQueue: nil)
     }
+
+    deinit { session.invalidateAndCancel() }
 
     private func url(_ path: String) -> URL {
         let relativePath = String(path.drop(while: { $0 == "/" }))
@@ -196,7 +211,7 @@ struct HermesAPI: Sendable {
         var req = request("/api/sessions/\(encodedID)/chat/stream", method: "POST",
                           body: try JSONSerialization.data(withJSONObject: payload))
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await session.bytes(for: req)
+        let (bytes, response) = try await session.bytes(for: req, delegate: trust)
         guard let http = response as? HTTPURLResponse else { throw HermesError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
             var body = "Request failed"
@@ -205,23 +220,32 @@ struct HermesAPI: Sendable {
             throw HermesError.badResponse(http.statusCode, String(body.prefix(260)))
         }
 
-        var event = "message"
-        var dataLines: [String] = []
-        for try await line in bytes.lines {
-            if line.isEmpty {
-                if !dataLines.isEmpty,
-                   let data = dataLines.joined(separator: "\n").data(using: .utf8),
-                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    await receive(event, object)
-                }
-                event = "message"
-                dataLines.removeAll(keepingCapacity: true)
-            } else if line.hasPrefix("event:") {
-                event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
-                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-            }
+        guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else {
+            throw HermesError.malformedResponse
         }
+        var decoder = ServerEventDecoder()
+        var runCompleted = false
+        func deliver(_ event: ServerEventDecoder.Event) async throws -> Bool {
+            await receive(event.name, event.payload)
+            switch event.name {
+            case "error", "run.failed", "run.cancelled":
+                let message = event.payload["message"] as? String ?? event.payload["error"] as? String
+                    ?? (event.name == "run.cancelled" ? "Hermes stopped this response." : "Hermes could not complete this response.")
+                throw HermesError.streamFailed(message)
+            case "run.completed": runCompleted = true
+            case "done":
+                guard runCompleted else { throw HermesError.streamInterrupted }
+                return true
+            default: break
+            }
+            return false
+        }
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            if let event = try decoder.append(byte), try await deliver(event) { return }
+        }
+        if let event = try decoder.finish(), try await deliver(event) { return }
+        throw HermesError.streamInterrupted
     }
 
     func respondToApproval(runID: String, requestID: String?, choice: String) async throws {
@@ -261,5 +285,57 @@ struct HermesAPI: Sendable {
             if part["type"] as? String == "image_url" { return "[Image]" }
             return nil
         }.joined(separator: "\n")
+    }
+}
+
+// Parse bytes rather than AsyncBytes.lines, which omits the blank separators SSE needs.
+struct ServerEventDecoder {
+    struct Event { let name: String; let payload: [String: Any] }
+    private var line = Data()
+    private var name = "message"
+    private var dataLines: [String] = []
+    private var afterCR = false
+    private var size = 0
+    private var firstLine = true
+
+    mutating func append(_ byte: UInt8) throws -> Event? {
+        if afterCR { afterCR = false; if byte == 10 { return nil } }
+        if byte == 13 || byte == 10 {
+            afterCR = byte == 13
+            return try endLine()
+        }
+        size += 1
+        guard size <= 8 * 1024 * 1024 else { throw HermesError.malformedResponse }
+        line.append(byte)
+        return nil
+    }
+
+    mutating func finish() throws -> Event? {
+        if !line.isEmpty, let event = try endLine() { return event }
+        return try flush()
+    }
+
+    private mutating func endLine() throws -> Event? {
+        guard var text = String(data: line, encoding: .utf8) else { throw HermesError.malformedResponse }
+        line.removeAll(keepingCapacity: true)
+        if firstLine { firstLine = false; if text.hasPrefix("\u{FEFF}") { text.removeFirst() } }
+        if text.isEmpty { return try flush() }
+        if text.hasPrefix(":") { return nil }
+        let parts = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        var value = parts.count == 2 ? String(parts[1]) : ""
+        if value.hasPrefix(" ") { value.removeFirst() }
+        if parts[0] == "event" { name = value }
+        else if parts[0] == "data" { dataLines.append(value) }
+        return nil
+    }
+
+    private mutating func flush() throws -> Event? {
+        defer { name = "message"; dataLines.removeAll(keepingCapacity: true); size = 0 }
+        guard !dataLines.isEmpty else { return nil }
+        let data = Data(dataLines.joined(separator: "\n").utf8)
+        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HermesError.malformedResponse
+        }
+        return Event(name: name, payload: payload)
     }
 }

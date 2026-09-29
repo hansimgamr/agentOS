@@ -140,9 +140,14 @@ class Bridge(BaseHTTPRequestHandler):
             if self.headers.get(name):
                 headers[name] = self.headers[name]
         connection = http.client.HTTPConnection(*HERMES, timeout=120)
+        response_started = False
         try:
             connection.request(self.command, self.path, body=body, headers=headers)
             response = connection.getresponse()
+            # Once a response status line is on the client socket, a later upstream
+            # stream error must close the truncated response. Appending a fresh 502
+            # would corrupt SSE data and falsely look like part of the original body.
+            response_started = True
             self.send_response_only(response.status, response.reason)
             for name, value in response.getheaders():
                 if name.lower() not in SKIP:
@@ -153,13 +158,12 @@ class Bridge(BaseHTTPRequestHandler):
             while chunk := response.read1(16384):
                 self.wfile.write(chunk)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        except OSError:
-            try:
-                self.send_error(502)
-            except OSError:
-                pass
+        except (http.client.HTTPException, OSError):
+            if not response_started:
+                try:
+                    self.send_error(502)
+                except OSError:
+                    pass
         finally:
             connection.close()
 

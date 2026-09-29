@@ -39,10 +39,26 @@ enum TestKeychainStore {
     static var rotationStarted = false
     static var rotationStartWaiter: CheckedContinuation<Void, Never>?
     static var rotationRelease: CheckedContinuation<Void, Never>?
+    static var createSuspended = false
+    static var createStarted = false
+    static var createStartWaiter: CheckedContinuation<Void, Never>?
+    static var createRelease: CheckedContinuation<Void, Never>?
+    static var sendEvents: [(String, [String: Any])] = []
+    static var sendError: Error?
+    static var sendSuspended = false
+    static var sendStarted = false
+    static var sendWaiting = false
+    static var sendStartWaiter: CheckedContinuation<Void, Never>?
+    static var sendWaiter: CheckedContinuation<Void, Never>?
+    static var sendRelease: CheckedContinuation<Void, Never>?
+    static var sendCalled = false
 
     static func reset() {
         claimFails = false; failingHealthEndpoints = []; healthSuspended = false; healthStarted = false
         rotationSuspended = false; rotationStarted = false
+        createSuspended = false; createStarted = false; createStartWaiter = nil; createRelease = nil
+        sendEvents = []; sendError = nil; sendSuspended = false; sendStarted = false; sendWaiting = false
+        sendStartWaiter = nil; sendWaiter = nil; sendRelease = nil; sendCalled = false
     }
     static func waitForHealth() async {
         if healthStarted { return }
@@ -54,6 +70,16 @@ enum TestKeychainStore {
         await withCheckedContinuation { rotationStartWaiter = $0 }
     }
     static func releaseRotation() { rotationRelease?.resume(); rotationRelease = nil }
+    static func waitForCreate() async {
+        if createStarted { return }
+        await withCheckedContinuation { createStartWaiter = $0 }
+    }
+    static func releaseCreate() { createRelease?.resume(); createRelease = nil }
+    static func waitForSend() async {
+        if sendWaiting { return }
+        await withCheckedContinuation { sendWaiter = $0 }
+    }
+    static func releaseSend() { sendRelease?.resume(); sendRelease = nil }
 }
 
 @MainActor struct TestHermesAPI {
@@ -94,8 +120,33 @@ enum TestKeychainStore {
     func messages(sessionID: String) async throws -> [ChatMessage] { [] }
     func searchMessages(sessionID: String, query: String) async throws -> String? { nil }
     func deleteSession(id: String) async throws { }
-    func createSession() async throws -> ChatSession { ChatSession(id: "created") }
-    func send(sessionID: String, text: String, image: PendingImage?, receive: @escaping @Sendable (String, [String: Any]) async -> Void) async throws { }
+    func createSession() async throws -> ChatSession {
+        if PairingTestControl.createSuspended {
+            await withCheckedContinuation {
+                PairingTestControl.createStarted = true
+                PairingTestControl.createStartWaiter?.resume()
+                PairingTestControl.createStartWaiter = nil
+                PairingTestControl.createRelease = $0
+            }
+        }
+        return ChatSession(id: "created")
+    }
+    func send(sessionID: String, text: String, image: PendingImage?, receive: @escaping @Sendable (String, [String: Any]) async -> Void) async throws {
+        PairingTestControl.sendCalled = true
+        PairingTestControl.sendStarted = true
+        PairingTestControl.sendStartWaiter?.resume()
+        PairingTestControl.sendStartWaiter = nil
+        for (event, payload) in PairingTestControl.sendEvents { await receive(event, payload) }
+        if PairingTestControl.sendSuspended {
+            await withCheckedContinuation {
+                PairingTestControl.sendRelease = $0
+                PairingTestControl.sendWaiting = true
+                PairingTestControl.sendWaiter?.resume()
+                PairingTestControl.sendWaiter = nil
+            }
+        }
+        if let error = PairingTestControl.sendError { throw error }
+    }
     func respondToApproval(runID: String, requestID: String?, choice: String) async throws { }
 }
 

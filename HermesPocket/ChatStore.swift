@@ -62,6 +62,9 @@ final class ChatStore {
         return try? HermesAPI(endpoint: endpoint, apiKey: apiKey, fingerprint: legacyFingerprint)
     }
     @ObservationIgnored private var activeStream: Task<Void, Error>?
+    @ObservationIgnored private var activeSendID: UUID?
+    @ObservationIgnored private var activeSendAccepted = false
+    @ObservationIgnored private var sendStopRequested = false
 
     func saveSettings(endpoint: String, apiKey: String) {
         #if targetEnvironment(simulator)
@@ -141,6 +144,7 @@ final class ChatStore {
         connectionRevision += 1
         activeStream?.cancel()
         activeStream = nil
+        activeSendID = nil
         KeychainStore.deleteProfile()
         KeychainStore.deleteDeviceKey()
         KeychainStore.deleteLegacy()
@@ -292,10 +296,18 @@ final class ChatStore {
 
     func send() async {
         guard !isSending else { return }
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let originalDraft = draft
+        let text = originalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let image = pendingImage
         guard !text.isEmpty || image != nil else { return }
         guard let api else { error = HermesError.missingKey.localizedDescription; return }
+        let sendID = UUID()
+        let revision = connectionRevision
+        let token = apiKey
+        let selectedAtStart = selectedSessionID
+        activeSendID = sendID
+        activeSendAccepted = false
+        sendStopRequested = false
         isSending = true
         error = nil
         toolActivity = nil
@@ -304,17 +316,38 @@ final class ChatStore {
         if selectedSessionID == nil {
             do {
                 let session = try await api.createSession()
+                guard isCurrentSend(sendID, revision: revision, sessionID: selectedAtStart, token: token) else {
+                    finishSend(sendID)
+                    return
+                }
                 sessions.insert(session, at: 0)
                 selectedSessionID = session.id
+                if sendStopRequested {
+                    restoreDraft(originalDraft, image: image)
+                    finishSend(sendID)
+                    return
+                }
             } catch {
-                draft = text
-                pendingImage = image
+                guard isCurrentSend(sendID, revision: revision, sessionID: selectedAtStart, token: token) else {
+                    finishSend(sendID)
+                    return
+                }
+                restoreDraft(originalDraft, image: image)
                 self.error = error.localizedDescription
-                isSending = false
+                finishSend(sendID)
                 return
             }
         }
-        guard let sessionID = selectedSessionID else { isSending = false; error = HermesError.noSession.localizedDescription; return }
+        guard let sessionID = selectedSessionID,
+              activeSendID == sendID, connectionRevision == revision, apiKey == token else {
+            finishSend(sendID)
+            return
+        }
+        if sendStopRequested {
+            restoreDraft(originalDraft, image: image)
+            finishSend(sendID)
+            return
+        }
         let user = ChatMessage(role: .user, content: text.isEmpty ? "[Image]" : text + (image == nil ? "" : "\n[Image]"), timestamp: Date())
         let reply = ChatMessage(role: .assistant, content: "", isStreaming: true, timestamp: Date())
         messages.append(contentsOf: [user, reply])
@@ -324,34 +357,138 @@ final class ChatStore {
         do {
             activeStream = Task { [weak self] in
                 try await api.send(sessionID: sessionID, text: text, image: image) { [weak self] event, payload in
-                await self?.handle(event: event, payload: payload, messageID: reply.id)
+                    await self?.handle(event: event, payload: payload, messageID: reply.id, sendID: sendID,
+                                       revision: revision, sessionID: sessionID, token: token)
                 }
             }
             try await activeStream?.value
-            activeStream = nil
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else {
+                finishSend(sendID)
+                return
+            }
             if let last = messages.lastIndex(where: { $0.id == reply.id }), messages[last].isStreaming {
                 messages[last].isStreaming = false
             }
-            isSending = false
-            activeStream = nil
             toolActivity = nil
-            let streamedError = error
-            await loadMessages(sessionID: sessionID)
-            if let streamedError { error = streamedError }
-            sessions = (try? await api.sessions()) ?? sessions
-        } catch {
-            activeStream = nil
-            if let last = messages.lastIndex(where: { $0.id == reply.id }) {
-                messages[last].isStreaming = false
-                if messages[last].content.isEmpty { messages[last].content = "The response was interrupted. Your conversation is saved; reconnect and refresh before retrying." }
+            await reconcileAfterSend(api, sessionID: sessionID, reply: reply, sendID: sendID,
+                                     revision: revision, token: token)
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else {
+                finishSend(sendID)
+                return
             }
-            isSending = false
-            toolActivity = nil
-            self.error = error.localizedDescription
+            finishSend(sendID)
+        } catch {
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else {
+                finishSend(sendID)
+                return
+            }
+            let accepted = activeSendAccepted || isAcceptedStreamFailure(error)
+            if !accepted && isDefiniteRejection(error) {
+                messages.removeAll { $0.id == user.id || $0.id == reply.id }
+                restoreDraft(originalDraft, image: image)
+                self.error = isCertificateFailure(error)
+                    ? "Hermes’s certificate could not be verified. Your message was not sent; check the trusted connection before retrying."
+                    : error.localizedDescription
+            } else {
+                if let last = messages.lastIndex(where: { $0.id == reply.id }) {
+                    messages[last].isStreaming = false
+                    if messages[last].content.isEmpty {
+                        messages[last].content = sendStopRequested
+                            ? "Stopped before a reply arrived. Hermes may have received this message; refresh before retrying."
+                            : "No complete reply arrived. Hermes may have received this message; refresh before retrying."
+                    }
+                }
+                toolActivity = nil
+                self.error = sendStopRequested ? "Stopped. Refresh the conversation before retrying." : error.localizedDescription
+                if accepted {
+                    await reconcileAfterSend(api, sessionID: sessionID, reply: reply, sendID: sendID,
+                                             revision: revision, token: token)
+                    guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else {
+                        finishSend(sendID)
+                        return
+                    }
+                }
+            }
+            finishSend(sendID)
         }
     }
 
-    func stop() { activeStream?.cancel() }
+    private func isCurrentSend(_ id: UUID, revision: Int, sessionID: String?, token: String) -> Bool {
+        activeSendID == id && connectionRevision == revision && selectedSessionID == sessionID && apiKey == token
+    }
+
+    private func finishSend(_ id: UUID) {
+        guard activeSendID == id else { return }
+        activeStream = nil
+        activeSendID = nil
+        activeSendAccepted = false
+        sendStopRequested = false
+        isSending = false
+        toolActivity = nil
+        pendingApproval = nil
+    }
+
+    private func restoreDraft(_ original: String, image: PendingImage?) {
+        if draft.isEmpty { draft = original }
+        else if !original.isEmpty { draft = original + "\n\n" + draft }
+        if pendingImage == nil { pendingImage = image }
+    }
+
+    private func isCertificateFailure(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return [.serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot,
+                .serverCertificateNotYetValid, .secureConnectionFailed, .clientCertificateRejected,
+                .clientCertificateRequired].contains(error.code)
+    }
+
+    private func isDefiniteRejection(_ error: Error) -> Bool {
+        if isCertificateFailure(error) { return true }
+        if let error = error as? URLError {
+            return [.cannotFindHost, .cannotConnectToHost, .notConnectedToInternet, .dnsLookupFailed].contains(error.code)
+        }
+        if case HermesError.badResponse(let status, _) = error { return (400..<500).contains(status) }
+        return false
+    }
+
+    private func isAcceptedStreamFailure(_ error: Error) -> Bool {
+        switch error {
+        case HermesError.streamInterrupted, HermesError.streamFailed: return true
+        default: return false
+        }
+    }
+
+    private func handle(event: String, payload: [String: Any], messageID: String, sendID: UUID,
+                        revision: Int, sessionID: String, token: String) {
+        guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else { return }
+        if event == "run.started" { activeSendAccepted = true }
+        handle(event: event, payload: payload, messageID: messageID)
+    }
+
+    private func reconcileAfterSend(_ api: HermesAPI, sessionID: String, reply: ChatMessage,
+                                    sendID: UUID, revision: Int, token: String) async {
+        do {
+            let saved = try await api.messages(sessionID: sessionID)
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else { return }
+            // Never erase streamed text with an empty or not-yet-persisted final turn.
+            if let local = messages.first(where: { $0.id == reply.id }),
+               !local.content.isEmpty,
+               saved.contains(where: { $0.role == .assistant && $0.content == local.content }) {
+                messages = saved
+            }
+            let refreshed = try await api.sessions()
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else { return }
+            sessions = refreshed
+        } catch {
+            guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else { return }
+            if self.error == nil { self.error = "The response is shown, but saved history could not be refreshed. Refresh before retrying." }
+        }
+    }
+
+    func stop() {
+        guard isSending else { return }
+        sendStopRequested = true
+        activeStream?.cancel()
+    }
 
     func respondToApproval(_ choice: String) async {
         guard let approval = pendingApproval, let api else { return }

@@ -117,7 +117,7 @@ struct RootView: View {
             }
         }
         .task {
-            if !store.apiKey.isEmpty { await store.connect() }
+            if !store.apiKey.isEmpty && !store.isConnected { await store.connect() }
         }
     }
 
