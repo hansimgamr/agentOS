@@ -15,10 +15,10 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources/MacRelay"
 swiftc -parse-as-library -target "$(uname -m)-apple-macos14.0" \
-  "$ROOT/MacCompanion/main.swift" "$ROOT/Shared/NearbyPairingProtocol.swift" \
+  "$ROOT/MacCompanion/main.swift" "$ROOT/Shared/NearbyPairingProtocol.swift" "$ROOT/Shared/WelcomeTour.swift" \
   -o "$CONTENTS/MacOS/agentOS Companion" \
   -framework SwiftUI -framework AppKit -framework CoreImage -framework CryptoKit -framework MultipeerConnectivity
-cp "$ROOT/MacRelay/companion.py" "$ROOT/MacRelay/credentials.py" "$ROOT/MacRelay/relay.py" "$CONTENTS/Resources/MacRelay/"
+cp "$ROOT/MacRelay/companion.py" "$ROOT/MacRelay/setup_connection.py" "$ROOT/MacRelay/credentials.py" "$ROOT/MacRelay/relay.py" "$CONTENTS/Resources/MacRelay/"
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,6 +36,11 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+xcrun actool "$ROOT/Design/AppIcon/AgentOS.icon" --compile "$CONTENTS/Resources" \
+  --platform macosx --minimum-deployment-target 14.0 --app-icon AgentOS \
+  --output-partial-info-plist "$STAGE/icon-info.plist" --output-format human-readable-text
+/usr/libexec/PlistBuddy -c "Merge $STAGE/icon-info.plist" "$CONTENTS/Info.plist"
+rm "$STAGE/icon-info.plist"
 codesign --force --deep --sign - "$STAGE"
 if [[ -L "$APP" ]]; then
   echo "Refusing to replace a symbolic link: $APP" >&2

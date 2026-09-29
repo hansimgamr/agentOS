@@ -11,6 +11,8 @@ import json
 import re
 import ssl
 import sys
+import subprocess
+import setup_connection
 from urllib.parse import urlencode
 
 import credentials
@@ -27,7 +29,8 @@ def _certificate_fingerprint():
 
 
 def _endpoint():
-    return f"https://{relay.LISTEN[0]}:{relay.LISTEN[1]}"
+    host, port = relay.listen_address()
+    return f"https://{host}:{port}"
 
 
 def _backend_health():
@@ -51,7 +54,7 @@ def _relay_health(fingerprint):
     connection = None
     try:
         context = ssl._create_unverified_context()
-        connection = http.client.HTTPSConnection(*relay.LISTEN, context=context, timeout=3)
+        connection = http.client.HTTPSConnection(*relay.listen_address(), context=context, timeout=3)
         connection.connect()
         observed = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
         if observed != fingerprint:
@@ -76,6 +79,7 @@ def status():
     relay_state = _relay_health(fingerprint) if fingerprint else {"available": False, "detail": "not_configured"}
     result = {
         "ok": True,
+        "hermes_installed": setup_connection.hermes_executable() is not None,
         "backend": _backend_health(),
         "relay": {
             "available": relay_state["available"],
@@ -93,6 +97,8 @@ def dispatch(request):
     if not isinstance(request, dict):
         return {"ok": False, "error": "invalid_request"}
     action = request.get("action")
+    if action == "prepare_connection":
+        return setup_connection.prepare()
     if action == "status":
         return status()
     if action == "create_pairing":
@@ -133,7 +139,7 @@ def main():
             response = dispatch(request)
         except (json.JSONDecodeError, UnicodeDecodeError):
             response = {"ok": False, "error": "invalid_json"}
-        except (OSError, ValueError, ssl.SSLError):
+        except (OSError, ValueError, RuntimeError, ssl.SSLError, subprocess.SubprocessError):
             response = {"ok": False, "error": "operation_unavailable"}
     sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
     sys.stdout.flush()

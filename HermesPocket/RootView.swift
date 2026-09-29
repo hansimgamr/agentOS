@@ -10,6 +10,8 @@ private enum ChatRoute: Hashable { case newChat, conversation(String) }
 struct RootView: View {
     @Environment(ChatStore.self) private var store
     @AppStorage("openSearchRequested") private var openSearchRequested = false
+    @AppStorage("agentOS.onboarding.v1") private var onboardingComplete = false
+    @State private var showingOnboarding = false
     @State private var showingSearch = false
     @State private var showingScanner = false
     @State private var showingNearbyPairing = false
@@ -35,6 +37,14 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(MainTab.settings)
         }
+        .sheet(isPresented: $showingOnboarding, onDismiss: { onboardingComplete = true }) {
+            WelcomeTour {
+                onboardingComplete = true
+                showingOnboarding = false
+            }
+            .presentationDragIndicator(.visible)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("agentOS.showWelcome"))) { _ in showingOnboarding = true }
         .sheet(isPresented: $showingSearch) {
             AppSearchView(openSettings: {
                 showingSearch = false
@@ -141,6 +151,10 @@ struct RootView: View {
             }
         }
         .task {
+            if !onboardingComplete {
+                if store.apiKey.isEmpty { showingOnboarding = true }
+                else { onboardingComplete = true }
+            }
             if !store.apiKey.isEmpty && !store.isConnected { await store.connect() }
         }
     }
@@ -185,7 +199,7 @@ struct RootView: View {
                             Label {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(store.isConnected ? "Start a conversation" : "Connect to your Mac")
-                                    Text(store.isConnected ? "Chat with Hermes" : "Pair your device in Settings")
+                                    Text(store.isConnected ? "Chat with Hermes" : "Open agentOS Companion on your Mac")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             } icon: { Image(systemName: store.isConnected ? "bubble.left.and.bubble.right" : "point.3.connected.trianglepath.dotted") }
@@ -315,7 +329,7 @@ private struct ChatView: View {
                 ContentUnavailableView {
                     Label(store.needsPairing ? "Pair this device again" : "Connect to Hermes", systemImage: "laptopcomputer")
                 } description: {
-                    Text(store.needsPairing ? "Your connection needs a fresh start. Pair with your Mac to continue." : store.status + "\nOpen Settings to pair with your Mac.")
+                    Text(store.needsPairing ? "Your connection needs a fresh start. Pair with your Mac to continue." : "Install and configure Hermes on your Mac, then open agentOS Companion. Keep both devices on the same local network and choose QR or nearby pairing.")
                 } actions: {
                     VStack(spacing: 12) {
                         ScanPairingButton()
@@ -558,6 +572,11 @@ private struct SettingsView: View {
                 } footer: {
                     Text("Require Face ID, Touch ID, or your device passcode when opening agentOS. Turning this off allows access without an additional app unlock.")
                 }
+                Section("Help") {
+                    Button("Welcome to agentOS", systemImage: "sparkles") {
+                        NotificationCenter.default.post(name: Notification.Name("agentOS.showWelcome"), object: nil)
+                    }
+                }
                 Section("Connection") {
                     HStack(spacing: 12) {
                         if checking {
@@ -603,7 +622,7 @@ private struct SettingsView: View {
                         Button("Disconnect this iPhone", role: .destructive) { confirmingDisconnect = true }
                             .disabled(store.isSending || store.isPairing || store.isRemovingPairing)
                     } else {
-                        Text("Tap Scan QR Code and scan the invitation shown by agentOS Companion on your Mac. Review the Mac's identity before trusting it.")
+                        Text("Hermes must already be installed and configured on your Mac. Open agentOS Companion and prepare the connection, then scan its QR code or pair nearby. No address or access key to copy.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if let error = store.error, !store.needsPairing { Text(error).font(.footnote).foregroundStyle(.red) }

@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import re
 import ssl
@@ -16,6 +17,18 @@ import credentials
 HERMES = ("localhost", 8642)
 LISTEN = ("fixture-mac.local", 8643)
 PRIVATE = Path.home() / ".hermes"
+
+def listen_address():
+    path = PRIVATE / "relay" / "config.json"
+    if not path.exists():
+        return LISTEN
+    config = json.loads(path.read_text())
+    host = config.get("listen_host", "")
+    address = ipaddress.ip_address(host)
+    if not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified or address.is_multicast or config.get("listen_port") != 8643:
+        raise ValueError("Invalid relay listener")
+    return host, 8643
+
 SKIP = {"connection", "content-length", "host", "keep-alive", "proxy-connection", "transfer-encoding"}
 ROUTES = {
     "DELETE": (r"/api/sessions/[A-Za-z0-9_.-]+",),
@@ -170,7 +183,8 @@ class Bridge(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(LISTEN, Bridge)
+    address = listen_address()
+    server = ThreadingHTTPServer(address, Bridge)
     server.master_key = api_key()
     certificate = (PRIVATE / "relay" / "relay.crt").read_text()
     server.certificate_fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
@@ -178,7 +192,7 @@ def main():
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(PRIVATE / "relay" / "relay.crt", PRIVATE / "relay" / "relay.key")
     server.socket = tls.wrap_socket(server.socket, server_side=True)
-    print(f"Hermes HTTPS relay listening on {LISTEN[0]}:{LISTEN[1]}", flush=True)
+    print(f"Hermes HTTPS relay listening on {address[0]}:{address[1]}", flush=True)
     server.serve_forever()
 
 

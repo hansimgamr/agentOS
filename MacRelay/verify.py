@@ -4,14 +4,14 @@ import hashlib
 import http.client
 import ssl
 
-from relay import LISTEN, PRIVATE, api_key
+from relay import listen_address, PRIVATE, api_key
 
 
 cert = PRIVATE / "relay" / "relay.crt"
 fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
 assert fingerprint == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 def get(path, key=None):
-    connection = http.client.HTTPSConnection(*LISTEN, context=ssl._create_unverified_context(), timeout=10)
+    connection = http.client.HTTPSConnection(*listen_address(), context=ssl._create_unverified_context(), timeout=10)
     connection.connect()
     assert hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest() == fingerprint
     connection.request("GET", path, headers={"Authorization": "Bearer " + key} if key else {})

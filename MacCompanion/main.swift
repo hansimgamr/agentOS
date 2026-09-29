@@ -131,6 +131,23 @@ final class CompanionModel: NSObject, ObservableObject {
         }
     }
 
+    func prepareConnection() {
+        guard !busy, !pairingActive, !nearbyActive else { return }
+        busy = true
+        error = nil
+        feedback = "Preparing your secure connection…"
+        Task {
+            defer { busy = false; refresh() }
+            do {
+                _ = try await CompanionCommand.run(["action": "prepare_connection"])
+                feedback = "Connection prepared. Checking services; when both are online, pair your device."
+            } catch {
+                feedback = nil
+                self.error = "Setup couldn’t finish. Make sure Hermes is installed and its model is configured, connect this Mac to your local network, then try Prepare connection again."
+            }
+        }
+    }
+
     func createPairing() {
         guard !busy, isActive, !nearbyActive else { return }
         busy = true
@@ -365,7 +382,7 @@ final class CompanionModel: NSObject, ObservableObject {
 
     private func show(_ error: Error) {
         // Backend diagnostics can contain private details. Show only a stable generic message.
-        self.error = "Could not complete that action. Check that Hermes and the relay are available, then try again."
+        self.error = "That action couldn’t finish. Open Overview and check both services. If either needs attention, choose Prepare connection, then try again."
     }
 
     private static func qr(_ value: String) -> NSImage? {
@@ -474,6 +491,9 @@ struct CompanionView: View {
     @Binding var showingSettings: Bool
     @StateObject private var model = CompanionModel()
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("agentOS.onboarding.v1") private var onboardingComplete = false
+    @State private var showingOnboarding = false
+    @State private var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var selectedDevice: [String: Any]?
     private let inactive = NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
     private var statusGood: Bool {
@@ -483,7 +503,7 @@ struct CompanionView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $sidebarVisibility) {
             List(selection: $page) {
                 Label("Overview", systemImage: "heart.text.square").tag("Overview")
                 Label("Paired Devices", systemImage: "iphone.gen3").badge(model.devices.count).tag("Paired Devices")
@@ -523,6 +543,11 @@ struct CompanionView: View {
                                 Label("Light", systemImage: "sun.max").tag("light")
                                 Label("Dark", systemImage: "moon").tag("dark")
                             }.pickerStyle(.radioGroup).labelsHidden()
+                            Divider()
+                            Button("Welcome to agentOS", systemImage: "sparkles") {
+                                showingSettings = false
+                                showingOnboarding = true
+                            }
                         }
                         .padding(20).frame(width: 240)
                         .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
@@ -534,7 +559,13 @@ struct CompanionView: View {
         }
         .onReceive(inactive) { _ in model.becameInactive() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.becameActive() }
-        .onAppear { model.becameActive() }
+        .sheet(isPresented: $showingOnboarding, onDismiss: { onboardingComplete = true }) {
+            WelcomeTour { onboardingComplete = true; showingOnboarding = false }
+        }
+        .onAppear {
+            model.becameActive()
+            if !onboardingComplete { showingOnboarding = true }
+        }
         .onDisappear { model.becameInactive(); model.cancelNearbyPairing() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in model.cancelNearbyPairing() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in model.tick() }
@@ -594,11 +625,26 @@ struct CompanionView: View {
     private var pairingCard: some View {
         VStack(spacing: 13) {
             cardTitle("Pair a device", icon: "qrcode")
-            if model.nearbyComparisonCode != nil {
+            if !statusGood && !model.pairingActive && !model.nearbyPairingActive {
+                Image(systemName: "desktopcomputer").font(.system(size: 54, weight: .light)).foregroundStyle(.blue)
+                Text(model.status.isEmpty ? "Checking your Mac…" : model.status["hermes_installed"] as? Bool == false ? "Install Hermes first" : "Prepare your Mac")
+                    .font(.title3.weight(.semibold))
+                Text("Hermes must already be installed and configured with a model. agentOS prepares the local API, secure relay, and pairing details for you.")
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                if model.status["hermes_installed"] as? Bool == false {
+                    Link("Hermes installation guide", destination: URL(string: "https://github.com/nousresearch/hermes-agent#installation")!)
+                } else {
+                    Button { model.prepareConnection() } label: {
+                        HStack { if model.busy { ProgressView().controlSize(.small) }; Text(model.busy ? "Preparing…" : "Prepare connection") }
+                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy || model.status.isEmpty)
+                    Text("One step. No IP address, certificate, or access key to copy.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if model.nearbyComparisonCode != nil {
                 Image(systemName: "checkmark.shield.fill").font(.system(size: 44)).foregroundStyle(.blue.gradient).frame(height: 94)
                 Text("Compare the codes").font(.callout.weight(.semibold))
                 Text(model.nearbyComparisonCode ?? "------").font(.system(size: 34, weight: .bold, design: .monospaced)).tracking(3).foregroundStyle(.primary)
-                Text("Proceed only if the iPhone shows the same six digits.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text("Compare these digits on your iPhone. If they differ, cancel and start again.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 Button { model.confirmNearbyCode() } label: {
                     Label("Codes match — Pair", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
@@ -611,7 +657,7 @@ struct CompanionView: View {
             } else if model.pairingActive, let image = model.qrImage {
                 Image(nsImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 160, height: 160)
                     .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12))
-                Text("Scan with your iPhone camera").font(.callout.weight(.medium))
+                Text("Scan in agentOS or with your iPhone camera").font(.callout.weight(.medium))
                 Text("Expires in \(model.remaining / 60):\(String(format: "%02d", model.remaining % 60))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button("Cancel pairing", role: .cancel) { model.cancelPairing() }.controlSize(.small)
             } else {
@@ -640,7 +686,7 @@ struct CompanionView: View {
                 Text("\(model.devices.count)").font(.caption.weight(.semibold)).padding(.horizontal, 9).padding(.vertical, 4).background(Color.blue.opacity(0.12), in: Capsule()).foregroundStyle(.blue)
             }
             if model.devices.isEmpty {
-                ContentUnavailableView("No paired devices", systemImage: "iphone.slash", description: Text("Pair an iPhone to securely connect it to Hermes."))
+                ContentUnavailableView("No paired devices", systemImage: "iphone.slash", description: Text("Go to Overview to pair an iPhone or iPad. Keep both devices on the same local network."))
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
             } else {
                 ForEach(model.devices.indices, id: \.self) { index in

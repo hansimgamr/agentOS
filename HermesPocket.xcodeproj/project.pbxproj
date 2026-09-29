@@ -16,6 +16,8 @@
 		A10000000000000000000007 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* RootView.swift */; };
 		A10000000000000000000010 /* NearbyPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* NearbyPairingView.swift */; };
 		A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* NearbyPairingProtocol.swift */; };
+		A10000000000000000000012 /* WelcomeTour.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012; };
+		A10000000000000000000013 /* AgentOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +32,8 @@
 		B10000000000000000000009 /* HermesPocket.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HermesPocket.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000010 /* NearbyPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NearbyPairingView.swift"; sourceTree = "<group>"; };
 		B10000000000000000000011 /* NearbyPairingProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/NearbyPairingProtocol.swift"; sourceTree = "<group>"; };
+		B10000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/WelcomeTour.swift"; sourceTree = "<group>"; };
+		B10000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = "../Design/AppIcon/AgentOS.icon"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -64,6 +68,8 @@
 				B10000000000000000000010 /* NearbyPairingView.swift */,
 				B10000000000000000000011 /* NearbyPairingProtocol.swift */,
 				B10000000000000000000008 /* Info.plist */,
+				B10000000000000000000012,
+				B10000000000000000000013,
 			);
 			path = HermesPocket;
 			sourceTree = "<group>";
@@ -133,6 +139,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000013,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,6 +158,7 @@
 				A10000000000000000000006 /* VoiceTranscriber.swift in Sources */,
 				A10000000000000000000010 /* NearbyPairingView.swift in Sources */,
 				A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */,
+				A10000000000000000000012,
 				A10000000000000000000007 /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -184,6 +192,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AgentOS;
 				INFOPLIST_FILE = HermesPocket/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.agentos.app;
@@ -200,6 +209,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AgentOS;
 				INFOPLIST_FILE = HermesPocket/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.agentos.app;
