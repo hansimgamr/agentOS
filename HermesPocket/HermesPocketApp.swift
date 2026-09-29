@@ -22,6 +22,7 @@ struct HermesPocketApp: App {
 private struct ProtectedRoot: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("faceIDEnabled") private var faceIDEnabled = true
     @State private var unlocked = false
     @State private var authenticationRunning = false
     @State private var pendingPairing: URL?
@@ -53,6 +54,10 @@ private struct ProtectedRoot: View {
             if phase == .background { unlocked = false }
             else { Task { await unlock() } }
         }
+        .onChange(of: faceIDEnabled) { _, enabled in
+            unlocked = false
+            Task { await unlock() }
+        }
         .onOpenURL { url in
             pendingPairing = url
             if unlocked { Task { await finishPairing() } }
@@ -62,6 +67,12 @@ private struct ProtectedRoot: View {
 
     private func unlock() async {
         guard scenePhase == .active, !unlocked, !authenticationRunning else { return }
+        if !faceIDEnabled {
+            unlocked = true
+            unlockError = nil
+            await finishPairing()
+            return
+        }
         authenticationRunning = true
         defer { authenticationRunning = false }
         let context = LAContext()
@@ -84,7 +95,7 @@ private struct ProtectedRoot: View {
     private func finishPairing() async {
         guard let pendingPairing, unlocked else { return }
         self.pendingPairing = nil
-        await store.pair(from: pendingPairing)
+        store.preparePair(from: pendingPairing)
     }
 }
 

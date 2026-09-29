@@ -62,6 +62,15 @@ struct RootView: View {
             get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
         )) { Button("OK", role: .cancel) { deletionError = nil } }
         message: { Text(deletionError ?? "") }
+        .confirmationDialog("Trust this Hermes server?", isPresented: Binding(
+            get: { store.pairingCandidate != nil },
+            set: { if !$0 { store.cancelPairing() } }
+        ), titleVisibility: .visible, presenting: store.pairingCandidate) { candidate in
+            Button("Trust \(candidate.host)") { Task { await store.confirmPairing(candidate) } }
+            Button("Cancel", role: .cancel) { store.cancelPairing() }
+        } message: { candidate in
+            Text("Pair with \(candidate.host) over HTTPS? Compare this certificate fingerprint with your Mac:\n\(candidate.fingerprint). The one-time pairing code will then be used.")
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task {
@@ -144,18 +153,17 @@ struct RootView: View {
                             .disabled(store.isSending || store.deletingSessionIDs.contains(session.id))
                         }
                     }
-                } header: {
-                    HStack {
-                        Text("Conversations")
-                        Spacer()
-                        Button { Task { await startConversation() } } label: { Image(systemName: "square.and.pencil") }
-                            .accessibilityLabel("New conversation")
-                    }
                 }
             }
             .navigationTitle("Chats")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { SearchButton() }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    SearchButton()
+                    Button { Task { await startConversation() } } label: {
+                        Image(systemName: "square.and.pencil")
+                    }
+                    .accessibilityLabel("New conversation")
+                }
             }
     }
 
@@ -394,7 +402,9 @@ private struct SettingsView: View {
     @State private var apiKey = ""
     @State private var checking = false
     @State private var rotating = false
+    @State private var confirmingDisconnect = false
     @AppStorage("appearance") private var appearance = "system"
+    @AppStorage("faceIDEnabled") private var faceIDEnabled = true
 
     var body: some View {
         NavigationStack {
@@ -405,6 +415,13 @@ private struct SettingsView: View {
                         Text("Light").tag("light")
                         Text("Dark").tag("dark")
                     }
+                }
+                Section {
+                    Toggle("Use Face ID", isOn: $faceIDEnabled)
+                } header: {
+                    Text("Face ID")
+                } footer: {
+                    Text("Require Face ID, Touch ID, or your device passcode when opening agentOS. Turning this off allows access without an additional app unlock.")
                 }
                 Section("Connection") {
                     HStack(spacing: 12) {
@@ -426,18 +443,29 @@ private struct SettingsView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.vertical, 6)
+                    #if targetEnvironment(simulator)
                     TextField("https://your-mac.example:8643", text: $endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    #if targetEnvironment(simulator)
                     SecureField("API server key", text: $apiKey).textInputAutocapitalization(.never).autocorrectionDisabled()
                     #else
-                    Text(KeychainStore.read() == nil ? "Scan the pairing QR code shown on your Mac with iPhone Camera. agentOS will open and pair automatically." : "This iPhone has its own revocable access. The Mac's Hermes key stays on the Mac.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if KeychainStore.read() != nil {
+                    if !store.apiKey.isEmpty {
+                        LabeledContent("Hermes server", value: store.endpoint)
+                        if let profile = KeychainStore.readProfile() {
+                            LabeledContent("Certificate", value: String(profile.fingerprint.prefix(16)) + "…")
+                            if let deviceID = profile.deviceID { LabeledContent("This iPhone", value: deviceID) }
+                        }
+                        Text("This iPhone has its own access. The Mac's Hermes key stays on the Mac.")
+                            .font(.footnote).foregroundStyle(.secondary)
                         Button { Task { rotating = true; await store.rotateDeviceKey(); rotating = false } } label: {
                             HStack { if rotating { ProgressView() }; Text("Rotate this iPhone's access") }
                         }.disabled(rotating)
+                        Button("Disconnect this iPhone", role: .destructive) { confirmingDisconnect = true }
+                            .disabled(store.isSending || store.isPairing)
+                    } else {
+                        Text("To pair, open the Camera app and scan the pairing QR code shown on your Mac. Review the Mac's hostname before trusting it.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
+                    if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red) }
                     #endif
                     Button { Task { await saveAndConnect() } } label: {
                         Label(checking ? "Connecting…" : "Save and connect", systemImage: "arrow.triangle.2.circlepath")
@@ -450,6 +478,12 @@ private struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { SearchButton() } }
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { endpoint = store.endpoint; apiKey = store.apiKey }
+            .confirmationDialog("Disconnect this iPhone?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+                Button("Disconnect", role: .destructive) { store.disconnect() }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Remove this iPhone's saved Hermes connection. Pair again with a QR code to reconnect.")
+            }
         }
     }
 

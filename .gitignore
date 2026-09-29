@@ -24,3 +24,6 @@ pair.png
 .envrc
 credentials.json
 secrets.json
+*.app/
+*.dmg
+*.xcarchive/

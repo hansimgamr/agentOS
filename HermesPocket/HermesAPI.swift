@@ -3,17 +3,22 @@ import CryptoKit
 import Security
 
 private final class RelayTrust: NSObject, URLSessionDelegate {
-    private let fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    private let host: String
+    private let fingerprint: String
+
+    init(host: String, fingerprint: String) {
+        self.host = host.lowercased()
+        self.fingerprint = fingerprint
+    }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let host = challenge.protectionSpace.host.lowercased()
-        guard challenge.protectionSpace.port == 8643,
-              host == "fixture-mac.local" || host == "fixture-mac.local" else {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        guard challenge.protectionSpace.port == 8643, host == self.host,
               let trust = challenge.protectionSpace.serverTrust,
               let certificate = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
             completionHandler(.cancelAuthenticationChallenge, nil)
@@ -36,32 +41,26 @@ private final class RelayTrust: NSObject, URLSessionDelegate {
 }
 
 struct HermesAPI: Sendable {
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration, delegate: RelayTrust(), delegateQueue: nil)
-    }()
+    private let session: URLSession
     let baseURL: URL
     let apiKey: String
 
-    init(endpoint: String, apiKey: String) throws {
+    init(endpoint: String, apiKey: String, fingerprint: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") throws {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
-              url.host != nil, url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(), url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil,
               url.path.isEmpty || url.path == "/" else { throw HermesError.invalidURL }
         #if !targetEnvironment(simulator)
-        guard scheme == "https", url.port == 8643,
-              ["fixture-mac.local", "fixture-mac.local"].contains(url.host!.lowercased()) else {
-            throw HermesError.invalidURL
-        }
+        guard scheme == "https", url.port == 8643, PairingQR.isLocalHost(host) else { throw HermesError.invalidURL }
         #endif
-        if scheme == "http" && !["localhost", "localhost"].contains(url.host!.lowercased()) {
-            throw HermesError.invalidURL
-        }
+        if scheme == "http" && !["localhost", "localhost"].contains(host) { throw HermesError.invalidURL }
         guard !apiKey.isEmpty else { throw HermesError.missingKey }
         self.baseURL = URL(string: url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/")!
         self.apiKey = apiKey
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.session = URLSession(configuration: configuration, delegate: RelayTrust(host: host, fingerprint: fingerprint), delegateQueue: nil)
     }
 
     private func url(_ path: String) -> URL {
@@ -83,7 +82,7 @@ struct HermesAPI: Sendable {
     }
 
     func checkConnection() async throws {
-        let (data, response) = try await Self.session.data(for: request("/health"))
+        let (data, response) = try await session.data(for: request("/health"))
         try check(response, data: data)
     }
 
@@ -97,15 +96,20 @@ struct HermesAPI: Sendable {
         return try Self.token(from: data)
     }
 
-    static func claimPairing(endpoint: String, code: String, name: String) async throws -> String {
-        let api = try HermesAPI(endpoint: endpoint, apiKey: "pairing")
+    static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String) {
+        let api = try HermesAPI(endpoint: pairing.endpoint, apiKey: "pairing", fingerprint: pairing.fingerprint)
         var req = URLRequest(url: api.url("/pair/claim"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["code": code, "name": name])
-        let (data, response) = try await session.data(for: req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["code": pairing.code, "name": name])
+        let (data, response) = try await api.session.data(for: req)
         try api.check(response, data: data)
-        return try token(from: data)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let deviceID = root["device_id"] as? String, deviceID.count == 16,
+              deviceID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw HermesError.malformedResponse
+        }
+        return (try token(from: data), deviceID)
     }
 
     private static func token(from data: Data) throws -> String {
@@ -145,7 +149,7 @@ struct HermesAPI: Sendable {
 
     func deleteSession(id: String) async throws {
         let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
-        let (data, response) = try await Self.session.data(for: request("/api/sessions/\(encoded)", method: "DELETE"))
+        let (data, response) = try await session.data(for: request("/api/sessions/\(encoded)", method: "DELETE"))
         if (response as? HTTPURLResponse)?.statusCode == 404 { return }
         try check(response, data: data)
         guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -192,7 +196,7 @@ struct HermesAPI: Sendable {
         var req = request("/api/sessions/\(encodedID)/chat/stream", method: "POST",
                           body: try JSONSerialization.data(withJSONObject: payload))
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await Self.session.bytes(for: req)
+        let (bytes, response) = try await session.bytes(for: req)
         guard let http = response as? HTTPURLResponse else { throw HermesError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
             var body = "Request failed"
@@ -228,13 +232,13 @@ struct HermesAPI: Sendable {
     }
 
     private func get(_ path: String) async throws -> Data {
-        let (data, response) = try await Self.session.data(for: request(path))
+        let (data, response) = try await session.data(for: request(path))
         try check(response, data: data)
         return data
     }
 
     private func post(_ path: String, json: [String: Any]) async throws -> Data {
-        let (data, response) = try await Self.session.data(for: request(path, method: "POST", body: try JSONSerialization.data(withJSONObject: json)))
+        let (data, response) = try await session.data(for: request(path, method: "POST", body: try JSONSerialization.data(withJSONObject: json)))
         try check(response, data: data)
         return data
     }

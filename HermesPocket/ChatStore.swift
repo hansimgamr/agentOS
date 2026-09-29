@@ -5,16 +5,13 @@ import UIKit
 @MainActor @Observable
 final class ChatStore {
     private let rotationDateKey = "hermes.deviceKeyRotatedAt"
-    var endpoint: String = {
-        let saved = UserDefaults.standard.string(forKey: "hermes.endpoint")?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        #if targetEnvironment(simulator)
-        let local = "http://localhost:8642"
-        #else
-        let local = "https://fixture-mac.local:8643"
-        #endif
-        return saved == nil || saved == "http://localhost:8642" || saved == "http://fixture-mac.local:8642" ? local : saved!
-    }()
-    var apiKey = KeychainStore.read() ?? KeychainStore.readLegacy() ?? ""
+    private let legacyFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    var endpoint: String
+    var apiKey: String
+    var pairingCandidate: PairingQR?
+    private var pairingInProgress = false
+    private var rotationInProgress = false
+    @ObservationIgnored private var connectionRevision = 0
     var sessions: [ChatSession] = []
     var selectedSessionID: String?
     var messages: [ChatMessage] = []
@@ -29,79 +26,197 @@ final class ChatStore {
     var pendingApproval: PendingApproval?
 
     var selectedSession: ChatSession? { sessions.first { $0.id == selectedSessionID } }
+    var isPairing: Bool { pairingInProgress }
+
+    init() {
+        if let profile = KeychainStore.readProfile() {
+            endpoint = profile.endpoint
+            apiKey = profile.token
+            return
+        }
+        #if targetEnvironment(simulator)
+        let localEndpoint = "http://localhost:8642"
+        #else
+        let localEndpoint = "https://fixture-mac.local:8643"
+        #endif
+        let savedEndpoint = UserDefaults.standard.string(forKey: "hermes.endpoint")
+            .flatMap { $0.isEmpty ? nil : $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+        endpoint = savedEndpoint == "http://localhost:8642" || savedEndpoint == "http://fixture-mac.local:8642" ? localEndpoint : (savedEndpoint ?? localEndpoint)
+        let oldDeviceToken = KeychainStore.read()
+        apiKey = oldDeviceToken ?? KeychainStore.readLegacy() ?? ""
+        if let oldDeviceToken, (endpoint == "https://fixture-mac.local:8643" || endpoint == "https://fixture-mac.local:8643") {
+            let migrated = HermesConnectionProfile(endpoint: endpoint, fingerprint: legacyFingerprint, token: oldDeviceToken, deviceID: nil)
+            if KeychainStore.saveProfile(migrated) {
+                KeychainStore.deleteDeviceKey()
+                KeychainStore.deleteLegacy()
+            }
+        }
+    }
 
     private var api: HermesAPI? {
-        try? HermesAPI(endpoint: endpoint, apiKey: apiKey)
+        if let profile = KeychainStore.readProfile() {
+            return try? HermesAPI(endpoint: profile.endpoint, apiKey: profile.token, fingerprint: profile.fingerprint)
+        }
+        guard endpoint == "https://fixture-mac.local:8643" || endpoint == "https://fixture-mac.local:8643"
+                || endpoint == "http://localhost:8642" else { return nil }
+        return try? HermesAPI(endpoint: endpoint, apiKey: apiKey, fingerprint: legacyFingerprint)
     }
     @ObservationIgnored private var activeStream: Task<Void, Error>?
 
     func saveSettings(endpoint: String, apiKey: String) {
+        #if targetEnvironment(simulator)
         self.endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.apiKey = apiKey
         UserDefaults.standard.set(self.endpoint, forKey: "hermes.endpoint")
-        #if targetEnvironment(simulator)
         if !KeychainStore.saveLegacy(apiKey) { error = "Could not save the API key to Keychain." }
         #endif
     }
 
     func connect() async {
+        let revision = connectionRevision
         guard var api else { error = apiKey.isEmpty ? HermesError.missingKey.localizedDescription : HermesError.invalidURL.localizedDescription; return }
         status = "Connecting…"
         do {
             #if !targetEnvironment(simulator)
-            if KeychainStore.read() == nil, KeychainStore.readLegacy() != nil {
+            if KeychainStore.readProfile() == nil, KeychainStore.read() == nil, KeychainStore.readLegacy() != nil {
                 let token = try await api.migrateLegacyKey()
-                guard KeychainStore.save(token) else { throw HermesError.keychainFailure }
+                let profile = HermesConnectionProfile(endpoint: endpoint, fingerprint: legacyFingerprint, token: token, deviceID: nil)
+                guard KeychainStore.saveProfile(profile) else { throw HermesError.keychainFailure }
                 KeychainStore.deleteLegacy()
                 apiKey = token
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: rotationDateKey)
-                api = try HermesAPI(endpoint: endpoint, apiKey: token)
+                api = try HermesAPI(endpoint: endpoint, apiKey: token, fingerprint: legacyFingerprint)
             }
             #endif
+            guard revision == connectionRevision else { return }
             try await api.checkConnection()
+            guard revision == connectionRevision else { return }
             isConnected = true
             status = "Connected to Hermes"
             error = nil
-            sessions = try await api.sessions()
+            let refreshedSessions = try await api.sessions()
+            guard revision == connectionRevision else { return }
+            sessions = refreshedSessions
             if let selectedSessionID, !sessions.contains(where: { $0.id == selectedSessionID }) {
                 self.selectedSessionID = nil
                 messages = []
             }
-            if let selectedSessionID { await loadMessages(sessionID: selectedSessionID) }
+            if let selectedSessionID {
+                let refreshedMessages = try await api.messages(sessionID: selectedSessionID)
+                guard revision == connectionRevision else { return }
+                messages = refreshedMessages
+            }
             #if !targetEnvironment(simulator)
             let lastRotation = UserDefaults.standard.double(forKey: rotationDateKey)
-            if KeychainStore.read() != nil && Date().timeIntervalSince1970 - lastRotation > 30 * 24 * 60 * 60 {
+            if !apiKey.isEmpty && Date().timeIntervalSince1970 - lastRotation > 30 * 24 * 60 * 60 {
                 await rotateDeviceKey()
             }
             #endif
-        } catch { isConnected = false; status = "Hermes is unavailable"; self.error = error.localizedDescription }
+        } catch {
+            guard revision == connectionRevision else { return }
+            isConnected = false
+            status = "Hermes is unavailable"
+            self.error = error.localizedDescription
+        }
     }
 
-    func pair(from url: URL) async {
-        guard url.scheme == "hermespocket", url.host == "pair",
-              let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "code" })?.value,
-              !code.isEmpty else { return }
+    func preparePair(from url: URL) {
+        guard !pairingInProgress, !rotationInProgress, !isSending else { return }
+        let profile = KeychainStore.readProfile()
+        let legacyEndpoint = profile?.endpoint ?? (["https://fixture-mac.local:8643", "https://fixture-mac.local:8643"].contains(endpoint)
+            ? endpoint : "https://fixture-mac.local:8643")
+        let candidate = PairingQR.parse(url, trustedEndpoint: legacyEndpoint,
+                                        trustedFingerprint: profile?.fingerprint ?? legacyFingerprint)
+        guard let candidate else {
+            error = "This pairing QR code is invalid or unsupported."
+            return
+        }
+        pairingCandidate = candidate
+        error = nil
+    }
+
+    func cancelPairing() { pairingCandidate = nil }
+
+    func disconnect() {
+        connectionRevision += 1
+        activeStream?.cancel()
+        activeStream = nil
+        KeychainStore.deleteProfile()
+        KeychainStore.deleteDeviceKey()
+        KeychainStore.deleteLegacy()
+        apiKey = ""
+        sessions = []
+        messages = []
+        selectedSessionID = nil
+        pendingApproval = nil
+        pendingImage = nil
+        toolActivity = nil
+        draft = ""
+        isSending = false
+        isConnected = false
+        status = "Connect to your Hermes agent"
+    }
+
+    func confirmPairing(_ candidate: PairingQR) async {
+        guard !pairingInProgress, !rotationInProgress, !isSending,
+              pairingCandidate == nil || pairingCandidate == candidate else { return }
+        pairingInProgress = true
+        defer { pairingInProgress = false }
+        let revision = connectionRevision
+        let previousStatus = status
+        let wasConnected = isConnected
+        if pairingCandidate == candidate { pairingCandidate = nil }
         status = "Pairing this iPhone…"
         do {
-            let token = try await HermesAPI.claimPairing(endpoint: endpoint, code: code, name: UIDevice.current.name)
-            guard KeychainStore.save(token) else { throw HermesError.keychainFailure }
+            let result = try await HermesAPI.claimPairing(candidate, name: UIDevice.current.name)
+            let profile = HermesConnectionProfile(endpoint: candidate.endpoint, fingerprint: candidate.fingerprint,
+                                                  token: result.token, deviceID: result.deviceID)
+            let candidateAPI = try HermesAPI(endpoint: profile.endpoint, apiKey: profile.token, fingerprint: profile.fingerprint)
+            try await candidateAPI.checkConnection()
+            guard revision == connectionRevision else { return }
+            guard KeychainStore.saveProfile(profile) else { throw HermesError.keychainFailure }
+            connectionRevision += 1
+            KeychainStore.deleteDeviceKey()
             KeychainStore.deleteLegacy()
-            apiKey = token
+            apiKey = result.token
+            endpoint = candidate.endpoint
+            sessions = []
+            selectedSessionID = nil
+            messages = []
+            draft = ""
+            pendingImage = nil
+            pendingApproval = nil
+            toolActivity = nil
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: rotationDateKey)
             await connect()
-        } catch { status = "Pairing failed"; self.error = error.localizedDescription }
+        } catch { status = wasConnected ? previousStatus : "Pairing failed"; self.error = error.localizedDescription }
     }
 
     func rotateDeviceKey() async {
-        guard KeychainStore.read() != nil, let api else { error = "Pair this device first."; return }
+        guard !rotationInProgress, !pairingInProgress, !apiKey.isEmpty, let api else { error = "Pair this device first."; return }
+        rotationInProgress = true
+        defer { rotationInProgress = false }
+        let credential = apiKey
+        let oldProfile = KeychainStore.readProfile()
         do {
             let token = try await api.rotateDeviceKey()
-            guard KeychainStore.save(token) else { throw HermesError.keychainFailure }
+            guard apiKey == credential, KeychainStore.readProfile() == oldProfile else { return }
+            if let oldProfile {
+                let updated = HermesConnectionProfile(endpoint: oldProfile.endpoint, fingerprint: oldProfile.fingerprint,
+                                                      token: token, deviceID: oldProfile.deviceID)
+                guard KeychainStore.saveProfile(updated) else { throw HermesError.keychainFailure }
+            } else {
+                guard KeychainStore.save(token) else { throw HermesError.keychainFailure }
+            }
+            connectionRevision += 1
             apiKey = token
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: rotationDateKey)
             status = "Device access rotated"
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            guard apiKey == credential, KeychainStore.readProfile() == oldProfile else { return }
+            self.error = error.localizedDescription
+        }
     }
 
     func searchChats(_ query: String) async throws -> [ChatSession] {
