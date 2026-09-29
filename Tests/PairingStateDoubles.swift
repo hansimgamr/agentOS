@@ -34,6 +34,7 @@ enum TestKeychainStore {
     static var deleteFailureID: String?
     static var deletedIDs: [String] = []
     static var duringDelete: (() -> Void)?
+    static var claimedInvitations: [PairingQR] = []
     static var claimFails = false
     static var failingHealthEndpoints = Set<String>()
     static var healthSuspended = false
@@ -60,7 +61,7 @@ enum TestKeychainStore {
 
     static func reset() {
         deleteFailureID = nil; deletedIDs = []; duringDelete = nil
-        claimFails = false; failingHealthEndpoints = []; healthSuspended = false; healthStarted = false
+        claimedInvitations = []; claimFails = false; failingHealthEndpoints = []; healthSuspended = false; healthStarted = false
         rotationSuspended = false; rotationStarted = false
         createSuspended = false; createStarted = false; createStartWaiter = nil; createRelease = nil
         sendEvents = []; sendError = nil; sendSuspended = false; sendStarted = false; sendWaiting = false
@@ -96,6 +97,7 @@ enum TestKeychainStore {
         self.apiKey = apiKey
     }
     static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String, certificateAcceptedAt: Date?) {
+        PairingTestControl.claimedInvitations.append(pairing)
         if PairingTestControl.claimFails { throw TestFailure.failed }
         return ("new-token", "0123456789abcdef", Date(timeIntervalSince1970: 1_800_000_000))
     }

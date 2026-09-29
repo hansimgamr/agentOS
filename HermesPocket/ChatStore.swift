@@ -21,6 +21,8 @@ final class ChatStore {
     var isSending = false
     var status = "Not connected"
     private(set) var isRemovingPairing = false
+    private(set) var isChangingAppProtection = false
+    var appProtectionError: String?
     var needsPairing = false
     var error: String?
     var draft = ""
@@ -137,8 +139,8 @@ final class ChatStore {
         error = failure.localizedDescription
     }
 
-    func preparePair(from url: URL) {
-        guard !pairingInProgress, !rotationInProgress, !isSending else { return }
+    private func pairingInvitation(from url: URL) -> PairingQR? {
+        guard !pairingInProgress, !rotationInProgress, !isSending else { return nil }
         let profile = KeychainStore.readProfile()
         let legacyEndpoint = profile?.endpoint ?? (["https://fixture-mac.local:8643", "https://fixture-mac.local:8643"].contains(endpoint)
             ? endpoint : "https://fixture-mac.local:8643")
@@ -146,13 +148,45 @@ final class ChatStore {
                                         trustedFingerprint: profile?.fingerprint ?? legacyFingerprint)
         guard let candidate else {
             error = "This pairing QR code is invalid or unsupported."
-            return
+            return nil
         }
-        pairingCandidate = candidate
         error = nil
+        return candidate
+    }
+
+    func preparePair(from url: URL) {
+        pairingCandidate = pairingInvitation(from: url)
+    }
+
+    // Only the in-app scanner and authenticated nearby exchange may use this path.
+    // External URL callbacks must retain an explicit pairing confirmation.
+    func pairFromVerifiedInvitation(_ url: URL) async {
+        guard pairingCandidate == nil, let candidate = pairingInvitation(from: url) else { return }
+        await confirmPairing(candidate)
     }
 
     func cancelPairing() { pairingCandidate = nil }
+
+    func disableAppProtectionWithAuthentication() async {
+        guard !isChangingAppProtection, !Task.isCancelled else { return }
+        isChangingAppProtection = true
+        appProtectionError = nil
+        defer { isChangingAppProtection = false }
+        let context = LAContext()
+        do {
+            let allowed = try await context.evaluatePolicy(.deviceOwnerAuthentication,
+                localizedReason: "Authenticate to turn off \(DeviceAuthentication.name) protection for agentOS.")
+            guard !Task.isCancelled else { return }
+            guard allowed else {
+                appProtectionError = "Protection stays on. Authenticate to turn it off."
+                return
+            }
+            UserDefaults.standard.set(false, forKey: "faceIDEnabled")
+        } catch {
+            guard !Task.isCancelled else { return }
+            appProtectionError = "Protection stays on. Authenticate to turn it off."
+        }
+    }
 
     func disconnectWithAuthentication() async {
         guard !isRemovingPairing, !isSending, !isPairing, !apiKey.isEmpty else { return }

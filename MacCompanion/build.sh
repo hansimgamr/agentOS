@@ -15,7 +15,7 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources/MacRelay"
 swiftc -parse-as-library -target "$(uname -m)-apple-macos14.0" \
-  "$ROOT/MacCompanion/main.swift" "$ROOT/Shared/NearbyPairingProtocol.swift" "$ROOT/Shared/WelcomeTour.swift" \
+  "$ROOT/MacCompanion/main.swift" "$ROOT/Shared/NearbyPairingProtocol.swift" "$ROOT/Shared/WelcomeTour.swift" "$ROOT/Shared/DeviceAuthentication.swift" \
   -o "$CONTENTS/MacOS/agentOS Companion" \
   -framework SwiftUI -framework AppKit -framework CoreImage -framework CryptoKit -framework MultipeerConnectivity
 cp "$ROOT/MacRelay/companion.py" "$ROOT/MacRelay/setup_connection.py" "$ROOT/MacRelay/credentials.py" "$ROOT/MacRelay/relay.py" "$CONTENTS/Resources/MacRelay/"

@@ -19,8 +19,8 @@ struct NearbyPairingView: View {
                     } actions: {
                         Button("Try again") { pairing.start() }.buttonStyle(.borderedProminent)
                     }
-                } else if let url = pairing.receivedURL {
-                    invitation(url, host: pairing.receivedHost ?? "Hermes")
+                } else if pairing.receivedURL != nil {
+                    ProgressView("Completing pairing…")
                 } else if let code = pairing.comparisonCode {
                     VStack(spacing: 16) {
                         ProgressView()
@@ -67,35 +67,17 @@ struct NearbyPairingView: View {
                 }
             }
         }
+        .onChange(of: pairing.receivedURL) { _, url in
+            guard let url else { return }
+            scanned(url)
+            pairing.stop()
+            dismiss()
+        }
         .onAppear { pairing.start() }
         .onDisappear { pairing.stop() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { pairing.pause() }
         }
-    }
-
-    private func invitation(_ url: URL, host: String) -> some View {
-        VStack(spacing: 14) {
-            Label("Mac approved pairing", systemImage: "checkmark.shield.fill")
-                .font(.headline).foregroundStyle(.green)
-            Text("\(host) is ready to pair.")
-                .foregroundStyle(.secondary)
-            if let fingerprint = pairing.fingerprint {
-                Text("Certificate fingerprint").font(.caption).foregroundStyle(.secondary)
-                Text(fingerprint).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
-                    .multilineTextAlignment(.center)
-            }
-            Text("Continue to review the server and confirm its certificate before this iPhone trusts it.")
-                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Continue") {
-                pairing.stop()
-                scanned(url)
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-            .frame(maxWidth: .infinity)
-        }
-        .padding(24)
     }
 }
 
@@ -105,8 +87,6 @@ private final class NearbyPairingController: NSObject, ObservableObject,
     @Published private(set) var selectedPeer: MCPeerID?
     @Published private(set) var comparisonCode: String?
     @Published private(set) var receivedURL: URL?
-    @Published private(set) var receivedHost: String?
-    @Published private(set) var fingerprint: String?
     @Published private(set) var status = "Searching for Hermes on your local network…"
     @Published private(set) var error: String?
 
@@ -128,8 +108,6 @@ private final class NearbyPairingController: NSObject, ObservableObject,
         selectedPeer = nil
         comparisonCode = nil
         receivedURL = nil
-        receivedHost = nil
-        fingerprint = nil
         error = nil
         status = "Searching for Hermes on your local network…"
         let peer = MCPeerID(displayName: UIDevice.current.name)
@@ -240,14 +218,12 @@ private final class NearbyPairingController: NSObject, ObservableObject,
                 }
                 if let invitation = handshake.receivedInvitation {
                     guard let url = URL(string: invitation),
-                          let parsed = PairingQR.parse(url),
+                          PairingQR.parse(url) != nil,
                           URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "v" && $0.value == "2" }) == true else {
                         self.fail("The Mac sent an unsupported pairing invitation.")
                         return
                     }
                     self.receivedURL = url
-                    self.receivedHost = parsed.host
-                    self.fingerprint = parsed.fingerprint
                     self.status = "Mac approved this pairing."
                 }
             } catch {

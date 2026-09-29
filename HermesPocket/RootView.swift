@@ -37,12 +37,13 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(MainTab.settings)
         }
-        .sheet(isPresented: $showingOnboarding, onDismiss: { onboardingComplete = true }) {
-            WelcomeTour {
+        .sheet(isPresented: $showingOnboarding) {
+            WelcomeTour(allowsClose: onboardingComplete) {
                 onboardingComplete = true
                 showingOnboarding = false
             }
-            .presentationDragIndicator(.visible)
+            .interactiveDismissDisabled(!onboardingComplete)
+            .presentationDragIndicator(onboardingComplete ? .visible : .hidden)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("agentOS.showWelcome"))) { _ in showingOnboarding = true }
         .sheet(isPresented: $showingSearch) {
@@ -60,8 +61,8 @@ struct RootView: View {
         .sheet(isPresented: $showingScanner, onDismiss: {
             if let url = scannedPairingURL {
                 scannedPairingURL = nil
-                store.preparePair(from: url)
-                if store.pairingCandidate == nil { selectedTab = .settings }
+                selectedTab = .settings
+                Task { await store.pairFromVerifiedInvitation(url) }
             }
         }) {
             PairingScannerView { url in
@@ -73,8 +74,8 @@ struct RootView: View {
         .sheet(isPresented: $showingNearbyPairing, onDismiss: {
             if let url = scannedPairingURL {
                 scannedPairingURL = nil
-                store.preparePair(from: url)
-                if store.pairingCandidate == nil { selectedTab = .settings }
+                selectedTab = .settings
+                Task { await store.pairFromVerifiedInvitation(url) }
             }
         }) {
             NearbyPairingView(scanned: { url in
@@ -89,56 +90,18 @@ struct RootView: View {
         .onChange(of: openSearchRequested, initial: true) { _, requested in
             if requested { showingSearch = true; openSearchRequested = false }
         }
-        .confirmationDialog("Delete conversation?", isPresented: Binding(
-            get: { chatToDelete != nil }, set: { if !$0 { chatToDelete = nil } }
-        ), titleVisibility: .visible, presenting: chatToDelete) { session in
-            Button("Delete", role: .destructive) {
-                Task {
-                    do {
-                        try await store.deleteSession(session.id)
-                        if !store.sessions.contains(where: { $0.id == session.id }) {
-                            chatPath.removeAll { $0 == .conversation(session.id) }
-                            compactColumn = .sidebar
-                        }
-                    } catch { deletionError = error.localizedDescription }
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: { session in
-            Text("Delete “\(session.title)” and its messages from Hermes? This cannot be undone.")
-        }
-        .confirmationDialog("Delete selected conversations?", isPresented: $confirmingBulkDelete, titleVisibility: .visible) {
-            Button("Delete \(selectedChats.count) conversations", role: .destructive) {
-                let ids = selectedChats
-                deletingSelectedChats = true
-                Task {
-                    do { try await store.deleteSessions(ids) }
-                    catch { deletionError = error.localizedDescription }
-                    selectedChats.formIntersection(Set(store.sessions.map(\.id)))
-                    chatPath.removeAll { route in
-                        if case .conversation(let id) = route { return !store.sessions.contains { $0.id == id } }
-                        return false
-                    }
-                    if selectedChats.isEmpty { chatEditMode = .inactive }
-                    deletingSelectedChats = false
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("These conversations and their messages will be deleted from Hermes. This cannot be undone.")
-        }
         .alert("Couldn’t delete conversation", isPresented: Binding(
             get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
         )) { Button("OK", role: .cancel) { deletionError = nil } }
         message: { Text(deletionError ?? "") }
-        .confirmationDialog("Trust this Hermes server?", isPresented: Binding(
+        .confirmationDialog("Pair with this Mac?", isPresented: Binding(
             get: { store.pairingCandidate != nil },
             set: { if !$0 { store.cancelPairing() } }
         ), titleVisibility: .visible, presenting: store.pairingCandidate) { candidate in
-            Button("Trust \(candidate.host)") { Task { await store.confirmPairing(candidate) } }
+            Button("Pair with \(candidate.host)") { Task { await store.confirmPairing(candidate) } }
             Button("Cancel", role: .cancel) { store.cancelPairing() }
         } message: { candidate in
-            Text("Pair with \(candidate.host) over HTTPS? Compare this certificate fingerprint with your Mac:\n\(candidate.fingerprint). The one-time pairing code will then be used.")
+            Text("Connect to \(candidate.host)? Continue only if you just scanned the QR code shown by your own agentOS Companion. The app checks its certificate automatically.")
         }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
@@ -151,10 +114,7 @@ struct RootView: View {
             }
         }
         .task {
-            if !onboardingComplete {
-                if store.apiKey.isEmpty { showingOnboarding = true }
-                else { onboardingComplete = true }
-            }
+            if !onboardingComplete { showingOnboarding = true }
             if !store.apiKey.isEmpty && !store.isConnected { await store.connect() }
         }
     }
@@ -216,6 +176,25 @@ struct RootView: View {
                             }
                         }
                         .tag(session.id)
+                        .confirmationDialog("Delete conversation?", isPresented: Binding(
+                            get: { chatToDelete?.id == session.id },
+                            set: { if !$0 && chatToDelete?.id == session.id { chatToDelete = nil } }
+                        ), titleVisibility: .visible, presenting: chatToDelete) { session in
+                            Button("Delete", role: .destructive) {
+                                Task {
+                                    do {
+                                        try await store.deleteSession(session.id)
+                                        if !store.sessions.contains(where: { $0.id == session.id }) {
+                                            chatPath.removeAll { $0 == .conversation(session.id) }
+                                            compactColumn = .sidebar
+                                        }
+                                    } catch { deletionError = error.localizedDescription }
+                                }
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: { session in
+                            Text("Delete “\(session.title)” and its messages from Hermes? This cannot be undone.")
+                        }
                         .disabled(store.deletingSessionIDs.contains(session.id))
                         .simultaneousGesture(LongPressGesture().onEnded { _ in
                             guard !deletingSelectedChats, !store.isSending, store.isConnected else { return }
@@ -264,6 +243,26 @@ struct RootView: View {
                         }
                         .tint(.red)
                         .disabled(selectedChats.isEmpty || store.isSending || deletingSelectedChats || !store.isConnected)
+                        .confirmationDialog("Delete selected conversations?", isPresented: $confirmingBulkDelete, titleVisibility: .visible) {
+                            Button("Delete \(selectedChats.count) conversations", role: .destructive) {
+                                let ids = selectedChats
+                                deletingSelectedChats = true
+                                Task {
+                                    do { try await store.deleteSessions(ids) }
+                                    catch { deletionError = error.localizedDescription }
+                                    selectedChats.formIntersection(Set(store.sessions.map(\.id)))
+                                    chatPath.removeAll { route in
+                                        if case .conversation(let id) = route { return !store.sessions.contains { $0.id == id } }
+                                        return false
+                                    }
+                                    if selectedChats.isEmpty { chatEditMode = .inactive }
+                                    deletingSelectedChats = false
+                                }
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("These conversations and their messages will be deleted from Hermes. This cannot be undone.")
+                        }
                         Button("Done") { selectedChats.removeAll(); chatEditMode = .inactive }
                             .disabled(deletingSelectedChats)
                     } else {
@@ -374,18 +373,7 @@ private struct ChatView: View {
         .onChange(of: store.pendingApproval?.id, initial: true) { _, id in
             showingApproval = id != nil
         }
-        .confirmationDialog("Hermes needs your approval", isPresented: $showingApproval,
-                            titleVisibility: .visible, presenting: store.pendingApproval) { approval in
-            if approval.choices.contains("once") {
-                Button("Allow once") { Task { await store.respondToApproval("once") } }
-            }
-            if approval.choices.contains("deny") {
-                Button("Deny", role: .destructive) { Task { await store.respondToApproval("deny") } }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: { approval in
-            Text(approval.summary)
-        }
+
     }
 
     private var messages: some View {
@@ -407,6 +395,18 @@ private struct ChatView: View {
                     if store.pendingApproval != nil {
                         Button("Review Hermes request", systemImage: "hand.raised") {
                             showingApproval = true
+                        }
+                        .confirmationDialog("Hermes needs your approval", isPresented: $showingApproval,
+                                            titleVisibility: .visible, presenting: store.pendingApproval) { approval in
+                            if approval.choices.contains("once") {
+                                Button("Allow once") { Task { await store.respondToApproval("once") } }
+                            }
+                            if approval.choices.contains("deny") {
+                                Button("Deny", role: .destructive) { Task { await store.respondToApproval("deny") } }
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: { approval in
+                            Text(approval.summary)
                         }
                     }
                     Color.clear.frame(height: 1).id("chat-bottom")
@@ -547,6 +547,8 @@ private struct MessageBody: View {
 
 private struct SettingsView: View {
     @Environment(ChatStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var protectionTask: Task<Void, Never>?
     @State private var endpoint = ""
     @State private var apiKey = ""
     @State private var checking = false
@@ -558,20 +560,6 @@ private struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Appearance") {
-                    Picker("Theme", selection: $appearance) {
-                        Text("Follow System").tag("system")
-                        Text("Light").tag("light")
-                        Text("Dark").tag("dark")
-                    }
-                }
-                Section {
-                    Toggle("Use Face ID", isOn: $faceIDEnabled)
-                } header: {
-                    Text("Face ID")
-                } footer: {
-                    Text("Require Face ID, Touch ID, or your device passcode when opening agentOS. Turning this off allows access without an additional app unlock.")
-                }
                 Section("Help") {
                     Button("Welcome to agentOS", systemImage: "sparkles") {
                         NotificationCenter.default.post(name: Notification.Name("agentOS.showWelcome"), object: nil)
@@ -621,6 +609,12 @@ private struct SettingsView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                         Button("Disconnect this iPhone", role: .destructive) { confirmingDisconnect = true }
                             .disabled(store.isSending || store.isPairing || store.isRemovingPairing)
+                            .confirmationDialog("Disconnect this iPhone?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+                                Button("Disconnect", role: .destructive) { Task { await store.disconnectWithAuthentication() } }
+                                Button("Cancel", role: .cancel) { }
+                            } message: {
+                                Text("Remove this iPhone's saved Hermes connection. Pair again with a QR code to reconnect.")
+                            }
                     } else {
                         Text("Hermes must already be installed and configured on your Mac. Open agentOS Companion and prepare the connection, then scan its QR code or pair nearby. No address or access key to copy.")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -632,23 +626,60 @@ private struct SettingsView: View {
                         NearbyPairingButton()
                     }
                     Button { Task { await saveAndConnect() } } label: {
-                        Label(checking ? "Connecting…" : "Save and connect", systemImage: "arrow.triangle.2.circlepath")
+                        Label(connectionButtonTitle, systemImage: "arrow.triangle.2.circlepath")
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .disabled(checking || endpoint.isEmpty || !canConnect)
                 }
+                Section("Appearance") {
+                    Picker("Theme", selection: $appearance) {
+                        Text("Follow System").tag("system")
+                        Text("Light").tag("light")
+                        Text("Dark").tag("dark")
+                    }
+                }
+                Section {
+                    Toggle("Use \(DeviceAuthentication.name)", isOn: Binding(
+                        get: { faceIDEnabled },
+                        set: { enabled in
+                            guard !store.isChangingAppProtection else { return }
+                            store.appProtectionError = nil
+                            if enabled { faceIDEnabled = true }
+                            else {
+                                protectionTask = Task { await store.disableAppProtectionWithAuthentication() }
+                            }
+                        }
+                    ))
+                    .disabled(store.isChangingAppProtection)
+                    if let error = store.appProtectionError {
+                        Text(error).font(.footnote).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text(DeviceAuthentication.name)
+                } footer: {
+                    Text("Require \(DeviceAuthentication.name) to open agentOS. Authenticate to turn protection off.")
+                }
+
             }
             .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { SearchButton() } }
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { endpoint = store.endpoint; apiKey = store.apiKey }
-            .confirmationDialog("Disconnect this iPhone?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
-                Button("Disconnect", role: .destructive) { Task { await store.disconnectWithAuthentication() } }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Remove this iPhone's saved Hermes connection. Pair again with a QR code to reconnect.")
+            .onDisappear { protectionTask?.cancel() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { protectionTask?.cancel() }
             }
+
         }
+    }
+
+    private var connectionButtonTitle: String {
+        if checking { return "Connecting…" }
+        #if targetEnvironment(simulator)
+        return "Save and connect"
+        #else
+        return store.isConnected ? "Refresh connection" : "Reconnect"
+        #endif
     }
 
     private var canConnect: Bool {

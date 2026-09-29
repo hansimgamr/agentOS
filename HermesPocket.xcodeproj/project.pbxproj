@@ -18,6 +18,7 @@
 		A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* NearbyPairingProtocol.swift */; };
 		A10000000000000000000012 /* WelcomeTour.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012; };
 		A10000000000000000000013 /* AgentOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013; };
+		A10000000000000000000014 = {isa = PBXBuildFile; fileRef = B10000000000000000000014; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		B10000000000000000000011 /* NearbyPairingProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/NearbyPairingProtocol.swift"; sourceTree = "<group>"; };
 		B10000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/WelcomeTour.swift"; sourceTree = "<group>"; };
 		B10000000000000000000013 = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = "../Design/AppIcon/AgentOS.icon"; sourceTree = "<group>"; };
+		B10000000000000000000014 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/DeviceAuthentication.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,6 +71,7 @@
 				B10000000000000000000011 /* NearbyPairingProtocol.swift */,
 				B10000000000000000000008 /* Info.plist */,
 				B10000000000000000000012,
+				B10000000000000000000014,
 				B10000000000000000000013,
 			);
 			path = HermesPocket;
@@ -159,6 +162,7 @@
 				A10000000000000000000010 /* NearbyPairingView.swift in Sources */,
 				A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */,
 				A10000000000000000000012,
+				A10000000000000000000014,
 				A10000000000000000000007 /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

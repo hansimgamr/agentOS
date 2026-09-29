@@ -492,6 +492,9 @@ struct CompanionView: View {
     @StateObject private var model = CompanionModel()
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("agentOS.onboarding.v1") private var onboardingComplete = false
+    @AppStorage("agentOS.onboarding.installation") private var completedInstallation = ""
+    // macOS retains preferences after deleting an app; each replacement bundle is a new installation.
+    private let installationID = String(describing: try? Bundle.main.bundleURL.resourceValues(forKeys: [.creationDateKey]).creationDate)
     @State private var showingOnboarding = false
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var selectedDevice: [String: Any]?
@@ -530,9 +533,17 @@ struct CompanionView: View {
             .navigationTitle(page ?? "Overview")
             .background(Color(nsColor: .windowBackgroundColor))
             .toolbar {
+                if page == "Paired Devices" {
+                    ToolbarItem(placement: .navigation) {
+                        Button { page = "Overview" } label: {
+                            Label("Back to Overview", systemImage: "chevron.left")
+                        }
+                        .help("Back to Overview")
+                    }
+                }
                 ToolbarItemGroup {
                     Button { showingSettings.toggle() } label: {
-                        Label("Appearance settings", systemImage: appearance == "dark" ? "moon.fill" : appearance == "light" ? "sun.max.fill" : "gearshape")
+                        Label("Appearance settings", systemImage: appearance == "dark" ? "sun.max.fill" : appearance == "light" ? "moon.fill" : "gearshape")
                     }
                     .help("Appearance settings")
                     .popover(isPresented: $showingSettings, arrowEdge: .top) {
@@ -559,25 +570,22 @@ struct CompanionView: View {
         }
         .onReceive(inactive) { _ in model.becameInactive() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.becameActive() }
-        .sheet(isPresented: $showingOnboarding, onDismiss: { onboardingComplete = true }) {
-            WelcomeTour { onboardingComplete = true; showingOnboarding = false }
+        .sheet(isPresented: $showingOnboarding) {
+            WelcomeTour(allowsClose: onboardingComplete) {
+                completedInstallation = installationID
+                onboardingComplete = true
+                showingOnboarding = false
+            }
+            .interactiveDismissDisabled(!onboardingComplete)
         }
         .onAppear {
             model.becameActive()
+            if completedInstallation != installationID { onboardingComplete = false }
             if !onboardingComplete { showingOnboarding = true }
         }
         .onDisappear { model.becameInactive(); model.cancelNearbyPairing() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in model.cancelNearbyPairing() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in model.tick() }
-        .alert("Revoke this device?", isPresented: Binding(get: { selectedDevice != nil }, set: { if !$0 { selectedDevice = nil } })) {
-            Button("Cancel", role: .cancel) { selectedDevice = nil }
-            Button("Revoke Device", role: .destructive) {
-                if let device = selectedDevice { model.revoke(device) }
-                selectedDevice = nil
-            }
-        } message: {
-            Text("\(selectedDevice?["name"] as? String ?? "This device") will lose access to Hermes immediately.")
-        }
         .alert("Allow nearby pairing?", isPresented: $model.showingNearbyRequest) {
             Button("Allow This Device") { model.approveNearbyPeer() }
             Button("Decline", role: .cancel) { model.declineNearbyPeer() }
@@ -611,12 +619,6 @@ struct CompanionView: View {
                 Text("Relay certificate · SHA-256 fingerprint").font(.caption).foregroundStyle(.secondary)
                 Text(fp).font(.system(.caption2, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Divider()
-            HStack {
-                Text(model.devices.count == 1 ? "1 paired device" : "\(model.devices.count) paired devices").foregroundStyle(.secondary)
-                Spacer()
-                Button("Manage devices") { page = "Paired Devices" }
-            }
         }
         .padding(24).frame(maxWidth: .infinity, alignment: .leading)
         .background(cardBackground)
@@ -624,8 +626,35 @@ struct CompanionView: View {
 
     private var pairingCard: some View {
         VStack(spacing: 13) {
-            cardTitle("Pair a device", icon: "qrcode")
-            if !statusGood && !model.pairingActive && !model.nearbyPairingActive {
+            cardTitle(model.devices.isEmpty ? "Pair a device" : "Your devices", icon: model.devices.isEmpty ? "qrcode" : "iphone")
+            if !model.devices.isEmpty && !model.pairingActive && !model.nearbyPairingActive {
+                VStack(spacing: 8) {
+                    Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                        .font(.system(size: 50, weight: .light)).foregroundStyle(.blue)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 24)).foregroundStyle(.green)
+                }.accessibilityElement(children: .ignore).accessibilityLabel("Device paired")
+                Text(model.devices.count == 1 ? "1 paired device" : "\(model.devices.count) paired devices")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Manage devices") { page = "Paired Devices" }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                HStack(spacing: 12) {
+                    Button { model.createPairing() } label: {
+                        Label("Scan QR code", systemImage: "qrcode.viewfinder")
+                    }
+                    .help("Show a QR code to scan with your iPhone or iPad")
+                    Button { model.startNearbyPairing() } label: {
+                        Label("Scan nearby", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    .help("Allow your iPhone or iPad to discover this Mac")
+                }
+                .buttonStyle(.bordered).controlSize(.large)
+                .disabled(model.busy || !statusGood)
+                if !statusGood && !model.status.isEmpty {
+                    Button(model.busy ? "Preparing…" : "Prepare connection") { model.prepareConnection() }
+                        .disabled(model.busy)
+                }
+            } else if !statusGood && !model.pairingActive && !model.nearbyPairingActive {
                 Image(systemName: "desktopcomputer").font(.system(size: 54, weight: .light)).foregroundStyle(.blue)
                 Text(model.status.isEmpty ? "Checking your Mac…" : model.status["hermes_installed"] as? Bool == false ? "Install Hermes first" : "Prepare your Mac")
                     .font(.title3.weight(.semibold))
@@ -709,6 +738,18 @@ struct CompanionView: View {
                         Button(role: .destructive) { selectedDevice = device } label: { Label("Revoke", systemImage: "minus.circle").labelStyle(.titleAndIcon) }
                             .buttonStyle(.bordered).controlSize(.small).help("Revoke this device's access")
                             .disabled(model.revokingDeviceID != nil)
+                            .confirmationDialog("Revoke this device?", isPresented: Binding(
+                                get: { selectedDevice?["id"] as? String == device["id"] as? String && selectedDevice != nil },
+                                set: { if !$0 && selectedDevice?["id"] as? String == device["id"] as? String { selectedDevice = nil } }
+                            ), titleVisibility: .visible) {
+                                Button("Cancel", role: .cancel) { selectedDevice = nil }
+                                Button("Revoke Device", role: .destructive) {
+                                    model.revoke(device)
+                                    selectedDevice = nil
+                                }
+                            } message: {
+                                Text("\(device["name"] as? String ?? "This device") will lose access to Hermes immediately.")
+                            }
                     }
                     .padding(.vertical, 5)
                     if index < model.devices.count - 1 { Divider().padding(.leading, 55) }

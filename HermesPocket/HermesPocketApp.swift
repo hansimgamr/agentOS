@@ -39,7 +39,7 @@ private struct ProtectedRoot: View {
                 VStack(spacing: 20) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 48)).foregroundStyle(.indigo)
                     Text("agentOS is locked").font(.title2.bold())
-                    Text("Unlock with Face ID, Touch ID or your device passcode.").foregroundStyle(.secondary)
+                    Text("Unlock with \(DeviceAuthentication.name).").foregroundStyle(.secondary)
                     if let unlockError { Text(unlockError).font(.footnote).foregroundStyle(.red) }
                     Button("Unlock") { Task { await unlock() } }
                         .buttonStyle(.borderedProminent)

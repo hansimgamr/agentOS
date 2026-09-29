@@ -2,6 +2,9 @@ import Foundation
 
 @main struct PairingStateChecks {
     @MainActor static func main() async throws {
+        precondition(DeviceAuthentication.name(for: .faceID) == "Face ID")
+        precondition(DeviceAuthentication.name(for: .touchID) == "Touch ID")
+        precondition(DeviceAuthentication.name(for: .none) == "Password") // This harness runs on macOS.
         precondition(ModelName.short("openai/gpt-5.6-2026-09-01") == "GPT 5.6")
         precondition(ModelName.short("gpt-5.6-mini") == "GPT 5.6 mini")
         precondition(ModelName.short(nil) == nil)
@@ -13,6 +16,55 @@ import Foundation
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "hermes.deviceKeyRotatedAt")
             return ChatStore()
         }
+
+        let originalProtection = UserDefaults.standard.object(forKey: "faceIDEnabled")
+        defer {
+            if let originalProtection { UserDefaults.standard.set(originalProtection, forKey: "faceIDEnabled") }
+            else { UserDefaults.standard.removeObject(forKey: "faceIDEnabled") }
+        }
+        let protection = setup()
+        UserDefaults.standard.set(true, forKey: "faceIDEnabled")
+        TestLAContext.fails = true
+        await protection.disableAppProtectionWithAuthentication()
+        precondition(UserDefaults.standard.bool(forKey: "faceIDEnabled") && !protection.isChangingAppProtection)
+        TestLAContext.fails = false
+        TestLAContext.allowed = false
+        await protection.disableAppProtectionWithAuthentication()
+        precondition(UserDefaults.standard.bool(forKey: "faceIDEnabled"))
+        TestLAContext.allowed = true
+        TestLAContext.duringAuthentication = {
+            precondition(UserDefaults.standard.bool(forKey: "faceIDEnabled"))
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        await Task { await protection.disableAppProtectionWithAuthentication() }.value
+        precondition(UserDefaults.standard.bool(forKey: "faceIDEnabled") && !protection.isChangingAppProtection)
+        TestLAContext.duringAuthentication = nil
+        await protection.disableAppProtectionWithAuthentication()
+        precondition(!UserDefaults.standard.bool(forKey: "faceIDEnabled") && protection.appProtectionError == nil)
+
+        let external = setup()
+        external.preparePair(from: candidateURL)
+        precondition(external.pairingCandidate != nil && PairingTestControl.claimedInvitations.isEmpty)
+        external.cancelPairing()
+        precondition(TestKeychainStore.profile == old)
+
+        let automatic = setup()
+        await automatic.pairFromVerifiedInvitation(candidateURL)
+        precondition(automatic.pairingCandidate == nil && automatic.isConnected)
+        precondition(PairingTestControl.claimedInvitations.count == 1)
+        precondition(TestKeychainStore.profile?.fingerprint == String(repeating: "b", count: 64))
+
+        let invalid = setup()
+        await invalid.pairFromVerifiedInvitation(URL(string: "hermespocket://pair?v=2")!)
+        precondition(PairingTestControl.claimedInvitations.isEmpty && TestKeychainStore.profile == old)
+        invalid.isSending = true
+        await invalid.pairFromVerifiedInvitation(candidateURL)
+        precondition(PairingTestControl.claimedInvitations.isEmpty)
+
+        let pending = setup()
+        pending.preparePair(from: candidateURL)
+        await pending.pairFromVerifiedInvitation(candidateURL)
+        precondition(PairingTestControl.claimedInvitations.isEmpty && TestKeychainStore.profile == old)
 
         let protected = setup()
         TestLAContext.fails = true
@@ -62,8 +114,7 @@ import Foundation
             if failure == "claim" { PairingTestControl.claimFails = true }
             if failure == "health" { PairingTestControl.failingHealthEndpoints.insert("https://new.local:8643") }
             if failure == "storage" { TestKeychainStore.failProfileSave = true }
-            store.preparePair(from: candidateURL)
-            await store.confirmPairing(store.pairingCandidate!)
+            await store.pairFromVerifiedInvitation(candidateURL)
             precondition(TestKeychainStore.profile == old && store.apiKey == old.token)
             precondition(store.draft == "keep this" && store.sessions.first?.id == "old-session")
         }
