@@ -5,12 +5,14 @@ struct ChatSession: Identifiable, Hashable {
     var title: String
     var preview: String
     var lastActive: Date?
+    var modelName: String?
 
-    init(id: String, title: String? = nil, preview: String? = nil, lastActive: Date? = nil) {
+    init(id: String, title: String? = nil, preview: String? = nil, lastActive: Date? = nil, modelName: String? = nil) {
         self.id = id
         self.title = title?.isEmpty == false ? title! : "New conversation"
         self.preview = preview ?? ""
         self.lastActive = lastActive
+        self.modelName = modelName
     }
 }
 
@@ -20,14 +22,16 @@ struct ChatMessage: Identifiable, Hashable {
     var role: Role
     var content: String
     var timestamp: Date?
+    var modelName: String?
     var isStreaming: Bool = false
 
-    init(id: String = UUID().uuidString, role: Role, content: String, isStreaming: Bool = false, timestamp: Date? = nil) {
+    init(id: String = UUID().uuidString, role: Role, content: String, isStreaming: Bool = false, timestamp: Date? = nil, modelName: String? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.isStreaming = isStreaming
         self.timestamp = timestamp
+        self.modelName = modelName
     }
 }
 
@@ -148,5 +152,16 @@ enum ChatSearch {
               let range = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
         let start = text.index(range.lowerBound, offsetBy: -40, limitedBy: text.startIndex) ?? text.startIndex
         return String(text[start...].prefix(180))
+    }
+}
+
+enum ModelName {
+    static func short(_ raw: String?) -> String? {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let name = String(raw.split(separator: "/").last ?? Substring(raw))
+            .replacingOccurrences(of: #"-\d{4}-\d{2}-\d{2}$"#, with: "", options: .regularExpression)
+        if name.lowercased().hasPrefix("gpt-") { return "GPT " + name.dropFirst(4).replacingOccurrences(of: "-", with: " ") }
+        if name.lowercased().hasPrefix("claude-") { return "Claude " + name.dropFirst(7).replacingOccurrences(of: "-", with: " ") }
+        return name
     }
 }

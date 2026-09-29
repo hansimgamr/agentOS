@@ -81,4 +81,5 @@ struct HermesConnectionProfile: Codable, Equatable {
     let fingerprint: String
     let token: String
     let deviceID: String?
+    var certificateAcceptedAt: Date? = nil
 }

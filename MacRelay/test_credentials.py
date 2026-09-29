@@ -39,6 +39,22 @@ class CredentialLifecycle(unittest.TestCase):
         self.assertIsNone(credentials.authenticate(second["token"]))
         self.assertEqual(credentials.DEVICES.stat().st_mode & 0o777, 0o600)
 
+    def test_certificate_acceptance_survives_rotation_and_legacy_is_unknown(self):
+        code = credentials.create_pairing()
+        fingerprint = "a" * 64
+        with patch.object(credentials.time, "time", return_value=1800000000):
+            # The ticket must be current at this controlled server time.
+            code = credentials.create_pairing()
+            result = credentials.claim_pairing(code, "Phone", fingerprint)
+        self.assertEqual(result["certificate_accepted_at"], 1800000000)
+        credentials.rotate(result["device_id"])
+        device = credentials.list_devices()[0]
+        self.assertEqual(device["certificate_accepted_at"], 1800000000)
+        self.assertEqual(device["certificate_fingerprint"], fingerprint)
+        with credentials.locked():
+            credentials._issue(credentials.read(credentials.DEVICES, {}), "Legacy")
+        self.assertIsNone(credentials.list_devices()[1]["certificate_accepted_at"])
+
     def test_legacy_migration_only_once(self):
         self.assertIsNotNone(credentials.migrate_legacy("First iPhone"))
         self.assertIsNone(credentials.migrate_legacy("Second iPhone"))

@@ -1,5 +1,6 @@
 """Small HTTPS bridge from the iPhone to Hermes' localhost API."""
 
+import hashlib
 import hmac
 import http.client
 import json
@@ -103,7 +104,7 @@ class Bridge(BaseHTTPRequestHandler):
         if not isinstance(code, str) or not isinstance(name, str) or not name.strip():
             self.send_error(400)
             return
-        result = credentials.claim_pairing(code, name.strip())
+        result = credentials.claim_pairing(code, name.strip(), getattr(self.server, "certificate_fingerprint", None))
         self.json_response(200, result) if result else self.send_error(403)
 
     def migrate(self):
@@ -171,6 +172,8 @@ class Bridge(BaseHTTPRequestHandler):
 def main():
     server = ThreadingHTTPServer(LISTEN, Bridge)
     server.master_key = api_key()
+    certificate = (PRIVATE / "relay" / "relay.crt").read_text()
+    server.certificate_fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(PRIVATE / "relay" / "relay.crt", PRIVATE / "relay" / "relay.key")

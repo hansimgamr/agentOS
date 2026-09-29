@@ -1,4 +1,5 @@
 import AppKit
+import LocalAuthentication
 import CoreImage.CIFilterBuiltins
 import MultipeerConnectivity
 import SwiftUI
@@ -6,14 +7,34 @@ import SwiftUI
 @main
 struct AgentOSCompanionApp: App {
     @AppStorage("companion.appearance") private var appearance = "system"
+    @State private var page: String? = "Overview"
+    @State private var showingSettings = false
 
     var body: some Scene {
         Window("agentOS Companion", id: "main") {
-            CompanionView(appearance: $appearance)
-                .frame(minWidth: 540, minHeight: 620)
+            CompanionView(appearance: $appearance, page: $page, showingSettings: $showingSettings)
+                .frame(minWidth: 720, minHeight: 520)
                 .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
         }
-        .windowResizability(.contentSize)
+        .windowStyle(.titleBar)
+        .windowResizability(.automatic)
+        .defaultSize(width: 900, height: 760)
+        .commands { CompanionSettingsCommands(showingSettings: $showingSettings) }
+
+    }
+}
+
+struct CompanionSettingsCommands: Commands {
+    @Binding var showingSettings: Bool
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                openWindow(id: "main")
+                showingSettings = true
+            }.keyboardShortcut(",", modifiers: .command)
+        }
     }
 }
 
@@ -27,6 +48,7 @@ final class CompanionModel: NSObject, ObservableObject {
     @Published var error: String?
     @Published var feedback: String?
     @Published var busy = false
+    @Published var revokingDeviceID: String?
     @Published var nearbyStatus = ""
     @Published var nearbyPeerName: String?
     @Published var showingNearbyRequest = false
@@ -231,8 +253,18 @@ final class CompanionModel: NSObject, ObservableObject {
     }
 
     func revoke(_ device: [String: Any]) {
-        guard let id = device["id"] as? String else { return }
+        guard revokingDeviceID == nil, let id = device["id"] as? String else { return }
+        revokingDeviceID = id
         Task {
+            defer { revokingDeviceID = nil }
+            let context = LAContext()
+            do {
+                guard try await context.evaluatePolicy(.deviceOwnerAuthentication,
+                    localizedReason: "Authenticate to revoke this device’s access to Hermes.") else { return }
+            } catch {
+                self.error = "Device access was not removed. Authenticate to revoke this pairing."
+                return
+            }
             do {
                 let result = try await CompanionCommand.run(["action": "revoke", "device_id": id])
                 guard result["revoked"] as? Bool == true else { throw CompanionError.actionFailed }
@@ -438,6 +470,8 @@ enum CompanionCommand {
 
 struct CompanionView: View {
     @Binding var appearance: String
+    @Binding var page: String?
+    @Binding var showingSettings: Bool
     @StateObject private var model = CompanionModel()
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedDevice: [String: Any]?
@@ -449,28 +483,53 @@ struct CompanionView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
+        NavigationSplitView {
+            List(selection: $page) {
+                Label("Overview", systemImage: "heart.text.square").tag("Overview")
+                Label("Paired Devices", systemImage: "iphone.gen3").badge(model.devices.count).tag("Paired Devices")
+            }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+        } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    header
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .top, spacing: 18) {
-                            connectionCard
-                            pairingCard
-                        }
-                        VStack(spacing: 18) {
-                            connectionCard
-                            pairingCard
-                        }
+                    switch page {
+                    case "Paired Devices": devicesCard
+                    default:
+                        pairingCard
+                        connectionCard
                     }
-                    devicesCard
-                    if let error = model.error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout).padding(.horizontal, 4) }
-                    if let feedback = model.feedback { Label(feedback, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout).padding(.horizontal, 4) }
+                    if let error = model.error {
+                        Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout)
+                    }
+                    if let feedback = model.feedback {
+                        Label(feedback, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                    }
                 }
-                .padding(28)
-                .frame(maxWidth: 960)
-                .frame(maxWidth: .infinity)
+                .padding(24).frame(maxWidth: 760).frame(maxWidth: .infinity)
+            }
+            .navigationTitle(page ?? "Overview")
+            .background(Color(nsColor: .windowBackgroundColor))
+            .toolbar {
+                ToolbarItemGroup {
+                    Button { showingSettings.toggle() } label: {
+                        Label("Appearance settings", systemImage: appearance == "dark" ? "moon.fill" : appearance == "light" ? "sun.max.fill" : "gearshape")
+                    }
+                    .help("Appearance settings")
+                    .popover(isPresented: $showingSettings, arrowEdge: .top) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Label("Appearance", systemImage: "circle.lefthalf.filled").font(.headline)
+                            Picker("Appearance", selection: $appearance) {
+                                Label("Follow System", systemImage: "desktopcomputer").tag("system")
+                                Label("Light", systemImage: "sun.max").tag("light")
+                                Label("Dark", systemImage: "moon").tag("dark")
+                            }.pickerStyle(.radioGroup).labelsHidden()
+                        }
+                        .padding(20).frame(width: 240)
+                        .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
+                    }
+                    Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                        .help("Refresh status and devices")
+                }
             }
         }
         .onReceive(inactive) { _ in model.becameInactive() }
@@ -496,46 +555,40 @@ struct CompanionView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "wave.3.right.circle.fill")
-                .font(.system(size: 38, weight: .medium))
-                .symbolRenderingMode(.palette).foregroundStyle(.white, .blue)
-                .frame(width: 58, height: 58).background(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 17))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("agentOS Companion").font(.system(size: 25, weight: .bold, design: .rounded))
-                Text("Connect and manage your iPhone devices").font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Picker("Appearance", selection: $appearance) {
-                Text("Follow System").tag("system")
-                Text("Light").tag("light")
-                Text("Dark").tag("dark")
-            }
-            .pickerStyle(.menu)
-            .help("Choose the app appearance")
-            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .semibold)).frame(width: 38, height: 38) }
-                .buttonStyle(.bordered).help("Refresh status and devices")
-        }
-        .padding(.bottom, 3)
-    }
-
     private var connectionCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            cardTitle("Connection", icon: "point.3.connected.trianglepath.dotted")
-            serviceRow("Hermes", detail: (model.status["backend"] as? [String: Any])?["detail"] as? String ?? "Local API", active: (model.status["backend"] as? [String: Any])?["available"] as? Bool == true)
-            Divider()
-            serviceRow("Secure relay", detail: (model.status["relay"] as? [String: Any])?["endpoint"] as? String ?? "Checking relay", active: (model.status["relay"] as? [String: Any])?["available"] as? Bool == true)
-            if let fp = (model.status["relay"] as? [String: Any])?["fingerprint"] as? String, !fp.isEmpty {
-                Text("Certificate fingerprint").font(.caption).foregroundStyle(.secondary)
-                Text(fp).font(.system(.caption2, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary).lineLimit(2)
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 30)).foregroundStyle(.blue.gradient)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Your connection").font(.title3.weight(.semibold))
+                    Text(model.status.isEmpty ? "Checking services…" : statusGood ? "Hermes is ready" : "Connection needs attention")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
             }
-            HStack(spacing: 7) {
-                Circle().fill(statusGood ? .green : .orange).frame(width: 8, height: 8)
-                Text(statusGood ? "Ready to pair" : "Setup needs attention").font(.caption.weight(.medium)).foregroundStyle(statusGood ? .green : .orange)
-            }.padding(.top, 2)
+            HStack(spacing: 14) {
+                serviceIndicator("Hermes", icon: "sparkles", state: model.status["backend"] as? [String: Any])
+                serviceIndicator("Secure relay", icon: "network", state: model.status["relay"] as? [String: Any])
+            }
+            Divider()
+            LabeledContent("Relay address") {
+                Text((model.status["relay"] as? [String: Any])?["endpoint"] as? String ?? "Checking…")
+                    .textSelection(.enabled)
+            }.font(.callout)
+            if let fp = (model.status["relay"] as? [String: Any])?["fingerprint"] as? String, !fp.isEmpty {
+                Text("Relay certificate · SHA-256 fingerprint").font(.caption).foregroundStyle(.secondary)
+                Text(fp).font(.system(.caption2, design: .monospaced)).textSelection(.enabled).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
+            HStack {
+                Text(model.devices.count == 1 ? "1 paired device" : "\(model.devices.count) paired devices").foregroundStyle(.secondary)
+                Spacer()
+                Button("Manage devices") { page = "Paired Devices" }
+            }
         }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading).background(cardBackground)
+        .padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
     }
 
     private var pairingCard: some View {
@@ -562,9 +615,9 @@ struct CompanionView: View {
                 Text("Expires in \(model.remaining / 60):\(String(format: "%02d", model.remaining % 60))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button("Cancel pairing", role: .cancel) { model.cancelPairing() }.controlSize(.small)
             } else {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right").font(.system(size: 50, weight: .light)).foregroundStyle(.blue.gradient).frame(height: 165)
-                Text("Create a temporary pairing code").font(.callout.weight(.medium))
-                Text("The QR code is valid for five minutes.").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right").font(.system(size: 50, weight: .light)).foregroundStyle(.blue.gradient).frame(height: 90)
+                Text("Connect your iPhone or iPad").font(.callout.weight(.medium))
+                Text("Scan a QR code or pair nearby. Invitations expire after five minutes.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button { model.createPairing() } label: {
                         Label(model.busy ? "Creating…" : "Pair device", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
@@ -575,7 +628,7 @@ struct CompanionView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 278)
+        .frame(maxWidth: .infinity)
         .padding(20).background(cardBackground)
     }
 
@@ -596,11 +649,20 @@ struct CompanionView: View {
                         Image(systemName: "iphone").font(.system(size: 20)).foregroundStyle(.blue).frame(width: 42, height: 42).background(Color.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(device["name"] as? String ?? "iPhone").font(.callout.weight(.semibold))
-                            Text("Added \(date(device["created"])) · \(String((device["id"] as? String ?? "").suffix(6)))").font(.caption).foregroundStyle(.secondary)
+                            Text("Paired \(date(device["created"]))").font(.caption).foregroundStyle(.secondary)
+                            Text("Certificate accepted: \(date(device["certificate_accepted_at"]))")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let fingerprint = device["certificate_fingerprint"] as? String {
+                                DisclosureGroup("Accepted fingerprint") {
+                                    Text(fingerprint).font(.caption.monospaced()).textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }.font(.caption)
+                            }
                         }
                         Spacer()
                         Button(role: .destructive) { selectedDevice = device } label: { Label("Revoke", systemImage: "minus.circle").labelStyle(.titleAndIcon) }
                             .buttonStyle(.bordered).controlSize(.small).help("Revoke this device's access")
+                            .disabled(model.revokingDeviceID != nil)
                     }
                     .padding(.vertical, 5)
                     if index < model.devices.count - 1 { Divider().padding(.leading, 55) }
@@ -620,20 +682,28 @@ struct CompanionView: View {
         Label(title, systemImage: icon).font(.headline).labelStyle(.titleAndIcon)
     }
 
-    private func serviceRow(_ name: String, detail: String, active: Bool) -> some View {
-        HStack(spacing: 10) {
-            Circle().fill(active ? .green : .orange).frame(width: 9, height: 9)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(name).font(.callout.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled)
+    private func serviceIndicator(_ name: String, icon: String, state: [String: Any]?) -> some View {
+        let active = state?["available"] as? Bool == true
+        let tint: Color = state == nil ? .secondary : active ? .green : .orange
+        return HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 58, height: 58)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(name).font(.headline)
+                Label(state == nil ? "Checking…" : active ? "Online" : "Needs attention",
+                      systemImage: state == nil ? "clock" : active ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.caption.weight(.medium)).foregroundStyle(tint)
             }
             Spacer(minLength: 0)
-            Text(active ? "Online" : "Offline").font(.caption.weight(.medium)).foregroundStyle(active ? .green : .orange)
         }
+        .padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func date(_ value: Any?) -> String {
-        guard let seconds = value as? NSNumber else { return "recently" }
-        return Date(timeIntervalSince1970: seconds.doubleValue).formatted(date: .abbreviated, time: .omitted)
+        guard let seconds = value as? NSNumber else { return "Not recorded" }
+        return Date(timeIntervalSince1970: seconds.doubleValue).formatted(date: .abbreviated, time: .shortened)
     }
 }

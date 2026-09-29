@@ -2,6 +2,10 @@ import Foundation
 
 @main struct PairingStateChecks {
     @MainActor static func main() async throws {
+        precondition(ModelName.short("openai/gpt-5.6-2026-09-01") == "GPT 5.6")
+        precondition(ModelName.short("gpt-5.6-mini") == "GPT 5.6 mini")
+        precondition(ModelName.short(nil) == nil)
+        precondition(ModelName.short("custom-model") == "custom-model")
         let old = HermesConnectionProfile(endpoint: "https://old.local:8643", fingerprint: String(repeating: "a", count: 64), token: "old-token", deviceID: "old-device")
         let candidateURL = URL(string: "hermespocket://pair?v=2&endpoint=https%3A%2F%2Fnew.local%3A8643&fingerprint=\(String(repeating: "b", count: 64))&code=\(String(repeating: "x", count: 43))")!
         func setup() -> ChatStore {
@@ -9,6 +13,49 @@ import Foundation
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "hermes.deviceKeyRotatedAt")
             return ChatStore()
         }
+
+        let protected = setup()
+        TestLAContext.fails = true
+        await protected.disconnectWithAuthentication()
+        precondition(TestKeychainStore.profile == old && protected.apiKey == old.token)
+        TestLAContext.fails = false
+        TestLAContext.allowed = false
+        await protected.disconnectWithAuthentication()
+        precondition(TestKeychainStore.profile == old)
+        TestLAContext.allowed = true
+        await protected.disconnectWithAuthentication()
+        precondition(TestKeychainStore.profile == nil && protected.apiKey.isEmpty)
+        let changedWhileAuthenticating = setup()
+        TestLAContext.duringAuthentication = {
+            changedWhileAuthenticating.disconnect()
+            TestKeychainStore.profile = old
+            changedWhileAuthenticating.apiKey = old.token
+        }
+        await changedWhileAuthenticating.disconnectWithAuthentication()
+        precondition(TestKeychainStore.profile == old)
+        TestLAContext.duringAuthentication = nil
+
+        let bulk = setup()
+        bulk.sessions = [ChatSession(id: "a"), ChatSession(id: "b"), ChatSession(id: "c")]
+        bulk.selectedSessionID = "a"
+        PairingTestControl.deleteFailureID = "b"
+        do { try await bulk.deleteSessions(["a", "b", "c"]); preconditionFailure("Expected failure") }
+        catch { }
+        precondition(bulk.sessions.map(\.id) == ["b", "c"] && bulk.selectedSessionID == nil)
+        precondition(PairingTestControl.deletedIDs == ["a"])
+        PairingTestControl.deleteFailureID = nil
+        try await bulk.deleteSessions(["b", "c"])
+        precondition(bulk.sessions.isEmpty)
+        let staleDelete = setup()
+        staleDelete.sessions = [ChatSession(id: "a")]
+        PairingTestControl.duringDelete = {
+            staleDelete.disconnect()
+            staleDelete.sessions = [ChatSession(id: "a", title: "Replacement server")]
+        }
+        do { try await staleDelete.deleteSessions(["a", "b"]); preconditionFailure("Expected cancellation") }
+        catch { }
+        precondition(staleDelete.sessions.first?.title == "Replacement server")
+        precondition(PairingTestControl.deletedIDs == ["a"])
 
         for failure in ["claim", "health", "storage"] {
             let store = setup(); store.draft = "keep this"; store.sessions = [ChatSession(id: "old-session")]
@@ -39,6 +86,13 @@ import Foundation
         await paired.confirmPairing(paired.pairingCandidate!)
         precondition(TestKeychainStore.profile?.endpoint == "https://new.local:8643")
         precondition(paired.apiKey == "new-token" && paired.draft.isEmpty && paired.sessions.first?.id == "fresh")
+
+        let acceptedDate = TestKeychainStore.profile?.certificateAcceptedAt
+        precondition(acceptedDate == Date(timeIntervalSince1970: 1_800_000_000))
+        await paired.rotateDeviceKey()
+        precondition(TestKeychainStore.profile?.certificateAcceptedAt == acceptedDate)
+        let legacyJSON = Data(#"{"endpoint":"https://old.local:8643","fingerprint":"aaa","token":"fixture","deviceID":null}"#.utf8)
+        precondition(try! JSONDecoder().decode(HermesConnectionProfile.self, from: legacyJSON).certificateAcceptedAt == nil)
 
         let connecting = setup(); PairingTestControl.healthSuspended = true
         let connectTask = Task { await connecting.connect() }
@@ -82,12 +136,13 @@ import Foundation
         partial.draft = "do not auto-retry"
         PairingTestControl.sendEvents = [
             ("run.started", [:]),
-            ("assistant.delta", ["delta": "partial reply"])
+            ("assistant.delta", ["delta": "partial reply", "runtime": ["model": "gpt-5.6"]])
         ]
         PairingTestControl.sendError = HermesError.streamInterrupted
         await partial.send()
         precondition(partial.messages.contains { $0.role == .assistant && $0.content.contains("partial reply") })
         precondition(!partial.messages.contains { $0.content.contains("saved") })
+        precondition(partial.messages.last?.modelName == "gpt-5.6")
         precondition(partial.draft.isEmpty && !partial.isSending)
 
         let stoppedBeforePost = setup()

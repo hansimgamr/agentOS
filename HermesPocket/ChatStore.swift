@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Observation
 import UIKit
 
@@ -19,6 +20,7 @@ final class ChatStore {
     var deletingSessionIDs: Set<String> = []
     var isSending = false
     var status = "Not connected"
+    private(set) var isRemovingPairing = false
     var needsPairing = false
     var error: String?
     var draft = ""
@@ -110,7 +112,7 @@ final class ChatStore {
             if let selectedSessionID {
                 let refreshedMessages = try await api.messages(sessionID: selectedSessionID)
                 guard revision == connectionRevision else { return }
-                messages = refreshedMessages
+                messages = withStoredModels(refreshedMessages, sessionID: selectedSessionID)
             }
             #if !targetEnvironment(simulator)
             let lastRotation = UserDefaults.standard.double(forKey: rotationDateKey)
@@ -152,6 +154,23 @@ final class ChatStore {
 
     func cancelPairing() { pairingCandidate = nil }
 
+    func disconnectWithAuthentication() async {
+        guard !isRemovingPairing, !isSending, !isPairing, !apiKey.isEmpty else { return }
+        isRemovingPairing = true
+        defer { isRemovingPairing = false }
+        let revision = connectionRevision
+        let context = LAContext()
+        do {
+            let allowed = try await context.evaluatePolicy(.deviceOwnerAuthentication,
+                localizedReason: "Authenticate to remove this iPhone’s Hermes pairing.")
+            guard allowed, revision == connectionRevision else { return }
+            disconnect()
+        } catch {
+            guard revision == connectionRevision else { return }
+            self.error = "Pairing was not removed. Authenticate to disconnect this iPhone."
+        }
+    }
+
     func disconnect() {
         connectionRevision += 1
         activeStream?.cancel()
@@ -188,7 +207,7 @@ final class ChatStore {
         do {
             let result = try await HermesAPI.claimPairing(candidate, name: UIDevice.current.name)
             let profile = HermesConnectionProfile(endpoint: candidate.endpoint, fingerprint: candidate.fingerprint,
-                                                  token: result.token, deviceID: result.deviceID)
+                                                  token: result.token, deviceID: result.deviceID, certificateAcceptedAt: result.certificateAcceptedAt ?? Date())
             let candidateAPI = try HermesAPI(endpoint: profile.endpoint, apiKey: profile.token, fingerprint: profile.fingerprint)
             try await candidateAPI.checkConnection()
             guard revision == connectionRevision else { return }
@@ -221,7 +240,7 @@ final class ChatStore {
             guard apiKey == credential, KeychainStore.readProfile() == oldProfile else { return }
             if let oldProfile {
                 let updated = HermesConnectionProfile(endpoint: oldProfile.endpoint, fingerprint: oldProfile.fingerprint,
-                                                      token: token, deviceID: oldProfile.deviceID)
+                                                      token: token, deviceID: oldProfile.deviceID, certificateAcceptedAt: oldProfile.certificateAcceptedAt)
                 guard KeychainStore.saveProfile(updated) else { throw HermesError.keychainFailure }
             } else {
                 guard KeychainStore.save(token) else { throw HermesError.keychainFailure }
@@ -262,9 +281,11 @@ final class ChatStore {
     func deleteSession(_ id: String) async throws {
         guard !isSending, !deletingSessionIDs.contains(id) else { return }
         guard let api else { throw HermesError.missingKey }
+        let revision = connectionRevision
         deletingSessionIDs.insert(id)
         defer { deletingSessionIDs.remove(id) }
         try await api.deleteSession(id: id)
+        guard revision == connectionRevision else { throw CancellationError() }
         sessions.removeAll { $0.id == id }
         if selectedSessionID == id {
             selectedSessionID = nil
@@ -273,6 +294,14 @@ final class ChatStore {
             toolActivity = nil
             draft = ""
             pendingImage = nil
+        }
+    }
+
+    func deleteSessions(_ ids: Set<String>) async throws {
+        let revision = connectionRevision
+        for id in ids.sorted() {
+            guard revision == connectionRevision, !isSending else { throw CancellationError() }
+            try await deleteSession(id)
         }
     }
 
@@ -300,7 +329,7 @@ final class ChatStore {
         do {
             let loaded = try await api.messages(sessionID: sessionID)
             guard selectedSessionID == sessionID else { return }
-            messages = loaded
+            messages = withStoredModels(loaded, sessionID: sessionID)
             error = nil
         } catch {
             guard selectedSessionID == sessionID else { return }
@@ -488,7 +517,13 @@ final class ChatStore {
             if let local = messages.first(where: { $0.id == reply.id }),
                !local.content.isEmpty,
                saved.contains(where: { $0.role == .assistant && $0.content == local.content }) {
-                messages = saved
+                var labeled = saved
+                if let modelName = local.modelName,
+                   let index = labeled.lastIndex(where: { $0.role == .assistant && $0.content == local.content }) {
+                    labeled[index].modelName = modelName
+                    UserDefaults.standard.set(modelName, forKey: modelKey(sessionID: sessionID, messageID: labeled[index].id))
+                }
+                messages = withStoredModels(labeled, sessionID: sessionID)
             }
             let refreshed = try await api.sessions()
             guard isCurrentSend(sendID, revision: revision, sessionID: sessionID, token: token) else { return }
@@ -514,8 +549,26 @@ final class ChatStore {
         } catch { recordError(error) }
     }
 
+    private func modelKey(sessionID: String, messageID: String) -> String {
+        "agentOS.messageModel|\(endpoint)|\(sessionID)|\(messageID)"
+    }
+
+    private func withStoredModels(_ items: [ChatMessage], sessionID: String) -> [ChatMessage] {
+        items.map { item in
+            var message = item
+            if message.modelName == nil {
+                message.modelName = UserDefaults.standard.string(forKey: modelKey(sessionID: sessionID, messageID: message.id))
+            }
+            return message
+        }
+    }
+
     private func handle(event: String, payload: [String: Any], messageID: String) {
         guard let index = messages.lastIndex(where: { $0.id == messageID }) else { return }
+        if let runtime = payload["runtime"] as? [String: Any],
+           let modelName = runtime["model"] as? String, !modelName.isEmpty {
+            messages[index].modelName = modelName
+        }
         switch event {
         case "assistant.delta":
             messages[index].content += payload["delta"] as? String ?? ""

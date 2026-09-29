@@ -62,6 +62,7 @@ class RelayTransport(unittest.TestCase):
         self.pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).digest()
         self.server = ThreadingHTTPServer(('localhost', 0), relay.Bridge)
         self.server.master_key = 'isolated-test-master-key'
+        self.server.certificate_fingerprint = self.pin.hex()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
@@ -100,6 +101,10 @@ class RelayTransport(unittest.TestCase):
         code = credentials.create_pairing()
         status, device = self.call('POST', '/pair/claim', {'code': code, 'name': 'Test phone'})
         self.assertEqual(status, 200)
+        listed = credentials.list_devices()[0]
+        self.assertEqual(listed['certificate_fingerprint'], self.pin.hex())
+        self.assertEqual(listed['certificate_accepted_at'], device['certificate_accepted_at'])
+        self.assertIsInstance(device['certificate_accepted_at'], int)
         return code, device
 
     def test_claim_replay_rotation_revoke_and_upstream_key_isolation(self):

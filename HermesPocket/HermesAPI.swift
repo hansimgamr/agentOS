@@ -111,7 +111,7 @@ final class HermesAPI: Sendable {
         return try Self.token(from: data)
     }
 
-    static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String) {
+    static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String, certificateAcceptedAt: Date?) {
         let api = try HermesAPI(endpoint: pairing.endpoint, apiKey: "pairing", fingerprint: pairing.fingerprint)
         var req = URLRequest(url: api.url("/pair/claim"))
         req.httpMethod = "POST"
@@ -124,7 +124,7 @@ final class HermesAPI: Sendable {
               deviceID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw HermesError.malformedResponse
         }
-        return (try token(from: data), deviceID)
+        return (try token(from: data), deviceID, (root["certificate_accepted_at"] as? Double).map { Date(timeIntervalSince1970: $0) })
     }
 
     private static func token(from data: Data) throws -> String {
@@ -141,7 +141,7 @@ final class HermesAPI: Sendable {
             guard let id = row["id"] as? String else { return nil }
             let date = (row["last_active"] as? Double).map { Date(timeIntervalSince1970: $0) }
             return ChatSession(id: id, title: row["title"] as? String,
-                              preview: row["preview"] as? String, lastActive: date)
+                              preview: row["preview"] as? String, lastActive: date, modelName: row["model"] as? String)
         }
     }
 
@@ -191,7 +191,7 @@ final class HermesAPI: Sendable {
             let content = Self.textContent(row["content"])
             guard !content.isEmpty else { return nil }
             return ChatMessage(id: row["id"] as? String ?? UUID().uuidString, role: role, content: content,
-                               timestamp: (row["timestamp"] as? Double).map { Date(timeIntervalSince1970: $0) })
+                               timestamp: (row["timestamp"] as? Double).map { Date(timeIntervalSince1970: $0) }, modelName: row["model"] as? String)
         }
     }
 

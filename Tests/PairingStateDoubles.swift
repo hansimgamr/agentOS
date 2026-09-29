@@ -1,10 +1,12 @@
 import Foundation
+import LocalAuthentication
 
 struct HermesConnectionProfile: Codable, Equatable {
     let endpoint: String
     let fingerprint: String
     let token: String
     let deviceID: String?
+    var certificateAcceptedAt: Date? = nil
 }
 
 enum TestKeychainStore {
@@ -29,6 +31,9 @@ enum TestKeychainStore {
 }
 
 @MainActor enum PairingTestControl {
+    static var deleteFailureID: String?
+    static var deletedIDs: [String] = []
+    static var duringDelete: (() -> Void)?
     static var claimFails = false
     static var failingHealthEndpoints = Set<String>()
     static var healthSuspended = false
@@ -54,6 +59,7 @@ enum TestKeychainStore {
     static var sendCalled = false
 
     static func reset() {
+        deleteFailureID = nil; deletedIDs = []; duringDelete = nil
         claimFails = false; failingHealthEndpoints = []; healthSuspended = false; healthStarted = false
         rotationSuspended = false; rotationStarted = false
         createSuspended = false; createStarted = false; createStartWaiter = nil; createRelease = nil
@@ -89,9 +95,9 @@ enum TestKeychainStore {
         self.endpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.apiKey = apiKey
     }
-    static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String) {
+    static func claimPairing(_ pairing: PairingQR, name: String) async throws -> (token: String, deviceID: String, certificateAcceptedAt: Date?) {
         if PairingTestControl.claimFails { throw TestFailure.failed }
-        return ("new-token", "0123456789abcdef")
+        return ("new-token", "0123456789abcdef", Date(timeIntervalSince1970: 1_800_000_000))
     }
     func checkConnection() async throws {
         if PairingTestControl.healthSuspended {
@@ -119,7 +125,11 @@ enum TestKeychainStore {
     func sessions(offset: Int = 0, limit: Int = 50) async throws -> [ChatSession] { [ChatSession(id: "fresh")] }
     func messages(sessionID: String) async throws -> [ChatMessage] { [] }
     func searchMessages(sessionID: String, query: String) async throws -> String? { nil }
-    func deleteSession(id: String) async throws { }
+    func deleteSession(id: String) async throws {
+        PairingTestControl.duringDelete?()
+        if PairingTestControl.deleteFailureID == id { throw TestFailure.failed }
+        PairingTestControl.deletedIDs.append(id)
+    }
     func createSession() async throws -> ChatSession {
         if PairingTestControl.createSuspended {
             await withCheckedContinuation {
@@ -151,3 +161,15 @@ enum TestKeychainStore {
 }
 
 enum TestFailure: Error { case failed }
+
+@MainActor final class TestLAContext {
+    static var allowed = false
+    static var fails = false
+    static var duringAuthentication: (() -> Void)?
+    func evaluatePolicy(_ policy: LAPolicy, localizedReason: String) async throws -> Bool {
+        precondition(policy == .deviceOwnerAuthentication)
+        Self.duringAuthentication?()
+        if Self.fails { throw TestFailure.failed }
+        return Self.allowed
+    }
+}

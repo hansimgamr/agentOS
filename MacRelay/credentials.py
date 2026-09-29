@@ -56,15 +56,20 @@ def locked():
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def _issue(state, name):
+def _issue(state, name, fingerprint=None):
     token = secrets.token_urlsafe(32)
     device_id = secrets.token_hex(8)
     safe_name = "".join(character for character in name if character.isprintable())[:80].strip() or "Device"
     state.setdefault("devices", {})[device_id] = {
         "name": safe_name, "hash": digest(token), "created": int(time.time())
     }
+    accepted_at = None
+    if fingerprint:
+        accepted_at = int(time.time())
+        state["devices"][device_id].update(certificate_accepted_at=accepted_at,
+                                           certificate_fingerprint=fingerprint)
     write(DEVICES, state)
-    return {"device_id": device_id, "token": token}
+    return {"device_id": device_id, "token": token, "certificate_accepted_at": accepted_at}
 
 
 def create_pairing_ticket(ttl=300):
@@ -121,7 +126,7 @@ def re_full_ticket_id(value):
     return len(value) == 16 and all(character in "0123456789abcdef" for character in value)
 
 
-def claim_pairing(code, name):
+def claim_pairing(code, name, fingerprint=None):
     if not isinstance(code, str) or not code or len(code) > 128:
         return None
     if not isinstance(name, str):
@@ -134,7 +139,7 @@ def claim_pairing(code, name):
         if not ticket or time.time() >= ticket.get("expires", 0) or not hmac.compare_digest(digest(code), ticket.get("hash", "")):
             return None
         PAIRING.unlink(missing_ok=True)
-        return _issue(read(DEVICES, {}), safe_name)
+        return _issue(read(DEVICES, {}), safe_name, fingerprint)
 
 
 def migrate_legacy(name):
@@ -177,7 +182,9 @@ def rotate(device_id):
 
 def list_devices():
     with locked():
-        return [{"id": device_id, "name": device["name"], "created": device["created"]}
+        return [{"id": device_id, "name": device["name"], "created": device["created"],
+                 "certificate_accepted_at": device.get("certificate_accepted_at"),
+                 "certificate_fingerprint": device.get("certificate_fingerprint")}
                 for device_id, device in read(DEVICES, {}).get("devices", {}).items()]
 
 

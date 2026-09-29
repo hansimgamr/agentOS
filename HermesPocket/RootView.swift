@@ -16,6 +16,10 @@ struct RootView: View {
     @State private var scannedPairingURL: URL?
     @State private var chatToDelete: ChatSession?
     @State private var deletionError: String?
+    @State private var chatEditMode: EditMode = .inactive
+    @State private var selectedChats: Set<String> = []
+    @State private var confirmingBulkDelete = false
+    @State private var deletingSelectedChats = false
     @State private var selectedTab: MainTab = .chats
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var chatPath: [ChatRoute] = []
@@ -93,6 +97,26 @@ struct RootView: View {
         } message: { session in
             Text("Delete “\(session.title)” and its messages from Hermes? This cannot be undone.")
         }
+        .confirmationDialog("Delete selected conversations?", isPresented: $confirmingBulkDelete, titleVisibility: .visible) {
+            Button("Delete \(selectedChats.count) conversations", role: .destructive) {
+                let ids = selectedChats
+                deletingSelectedChats = true
+                Task {
+                    do { try await store.deleteSessions(ids) }
+                    catch { deletionError = error.localizedDescription }
+                    selectedChats.formIntersection(Set(store.sessions.map(\.id)))
+                    chatPath.removeAll { route in
+                        if case .conversation(let id) = route { return !store.sessions.contains { $0.id == id } }
+                        return false
+                    }
+                    if selectedChats.isEmpty { chatEditMode = .inactive }
+                    deletingSelectedChats = false
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("These conversations and their messages will be deleted from Hermes. This cannot be undone.")
+        }
         .alert("Couldn’t delete conversation", isPresented: Binding(
             get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
         )) { Button("OK", role: .cancel) { deletionError = nil } }
@@ -147,7 +171,7 @@ struct RootView: View {
     }
 
     private var conversationList: some View {
-            List {
+            List(selection: $selectedChats) {
                 Section {
                     if !store.isConnected {
                         ScanPairingButton()
@@ -168,32 +192,40 @@ struct RootView: View {
                         }
                     }
                     ForEach(store.sessions) { session in
-                        Button {
-                            openConversation(session.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("🪽 \(session.title)").lineLimit(1)
-                                if let date = session.lastActive {
-                                    Text(ChatTimestamp.label(date))
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                if !session.preview.isEmpty { Text(session.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        Group {
+                            if chatEditMode == .active {
+                                conversationRow(session)
+                            } else {
+                                Button { if chatEditMode != .active { openConversation(session.id) } } label: { conversationRow(session) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityHint("Opens conversation. Touch and hold to select chats.")
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens conversation")
+                        .tag(session.id)
                         .disabled(store.deletingSessionIDs.contains(session.id))
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in
+                            guard !deletingSelectedChats, !store.isSending, store.isConnected else { return }
+                            selectedChats.insert(session.id)
+                            chatEditMode = .active
+                        })
+                        .accessibilityAction(named: "Select conversation") {
+                            selectedChats.insert(session.id)
+                            chatEditMode = .active
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) { chatToDelete = session } label: {
-                                Label("Delete", systemImage: "trash")
+                            if chatEditMode != .active {
+                                Button(role: .destructive) { chatToDelete = session } label: { Label("Delete", systemImage: "trash") }
+                                    .tint(.red)
+                                    .disabled(store.isSending || store.deletingSessionIDs.contains(session.id))
                             }
-                            .tint(.red)
-                            .disabled(store.isSending || store.deletingSessionIDs.contains(session.id))
                         }
                     }
                 }
+            }
+            .environment(\.editMode, $chatEditMode)
+            .disabled(deletingSelectedChats)
+            .onChange(of: store.isConnected) { _, connected in
+                if !connected { selectedChats.removeAll(); chatEditMode = .inactive }
             }
             .overlay {
                 if store.needsPairing {
@@ -212,14 +244,37 @@ struct RootView: View {
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    SearchButton()
-                    Button { startConversation() } label: {
-                        Image(systemName: "square.and.pencil")
+                    if chatEditMode == .active {
+                        Button { confirmingBulkDelete = true } label: {
+                            Label("Delete selected", systemImage: "trash")
+                        }
+                        .tint(.red)
+                        .disabled(selectedChats.isEmpty || store.isSending || deletingSelectedChats || !store.isConnected)
+                        Button("Done") { selectedChats.removeAll(); chatEditMode = .inactive }
+                            .disabled(deletingSelectedChats)
+                    } else {
+                        SearchButton()
+                        Button { startConversation() } label: { Image(systemName: "square.and.pencil") }
+                            .accessibilityLabel("New conversation")
+                            .disabled(store.isSending || store.isPairing)
                     }
-                    .accessibilityLabel("New conversation")
-                    .disabled(store.isSending || store.isPairing)
                 }
             }
+    }
+
+    private func conversationRow(_ session: ChatSession) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("🪽 \(session.title)").lineLimit(1)
+            HStack(spacing: 6) {
+                if let model = ModelName.short(session.modelName) { Text(model).lineLimit(1) }
+                if let date = session.lastActive { Text(ChatTimestamp.label(date)) }
+            }.font(.caption2).foregroundStyle(.secondary)
+            if !session.preview.isEmpty {
+                Text(session.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private func openConversation(_ id: String) {
@@ -243,6 +298,7 @@ private struct ChatView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
     @State private var dictationPrefix = ""
+    @State private var followsLatest = true
     @State private var showingApproval = false
     @State private var voice = VoiceTranscriber()
     @Binding var selectedTab: MainTab
@@ -321,7 +377,7 @@ private struct ChatView: View {
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 18) {
                     if store.messages.isEmpty {
                         ContentUnavailableView("What can Hermes help with?", systemImage: "bubble.left.and.bubble.right", description: Text("Ask a question, attach a photo, or dictate a message."))
                             .padding(.top, 70)
@@ -339,14 +395,31 @@ private struct ChatView: View {
                             showingApproval = true
                         }
                     }
+                    Color.clear.frame(height: 1).id("chat-bottom")
                 }
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .padding()
             }
             .defaultScrollAnchor(.bottom)
-            .onChange(of: store.messages.count) { _, _ in
-                if let id = store.messages.last?.id { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) } }
+            .simultaneousGesture(DragGesture().onChanged { _ in followsLatest = false })
+            .task(id: store.selectedSessionID) {
+                followsLatest = true
+                await Task.yield()
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
+            }
+            .task(id: store.messages) {
+                guard followsLatest else { return }
+                await Task.yield()
+                guard !Task.isCancelled, followsLatest else { return }
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
+            }
+            .onChange(of: store.error) { _, _ in
+                if followsLatest { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            }
+            .onChange(of: store.isSending) { _, sending in
+                if sending { followsLatest = true }
+                if followsLatest { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
         }
     }
@@ -415,10 +488,12 @@ private struct MessageRow: View {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         Text(isUser ? "You" : "Hermes 🪽").fontWeight(.semibold)
+                        if !isUser, let model = ModelName.short(message.modelName) { Text(model) }
                         if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(isUser ? "You" : "Hermes 🪽").fontWeight(.semibold)
+                        if !isUser, let model = ModelName.short(message.modelName) { Text(model) }
                         if let date = message.timestamp { Text(ChatTimestamp.label(date)) }
                     }
                 }
@@ -511,7 +586,11 @@ private struct SettingsView: View {
                     if !store.apiKey.isEmpty {
                         LabeledContent("Hermes server", value: store.endpoint)
                         if let profile = KeychainStore.readProfile() {
-                            LabeledContent("Certificate", value: String(profile.fingerprint.prefix(16)) + "…")
+                            LabeledContent("Certificate accepted", value: profile.certificateAcceptedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Not recorded")
+                            DisclosureGroup("Certificate fingerprint") {
+                                Text(profile.fingerprint).font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            }
                             if let deviceID = profile.deviceID { LabeledContent("This iPhone", value: deviceID) }
                         }
                         Text("This iPhone has its own access. The Mac's Hermes key stays on the Mac.")
@@ -519,8 +598,10 @@ private struct SettingsView: View {
                         Button { Task { rotating = true; await store.rotateDeviceKey(); rotating = false } } label: {
                             HStack { if rotating { ProgressView() }; Text("Rotate this iPhone's access") }
                         }.disabled(rotating)
+                        Text("An access key is a secret digital password that lets this iPhone connect to Hermes on your Mac. The app stores and sends it securely—you don’t need to remember or type it. Access renews automatically after 30 days when you next connect. Use this button to replace your key early if you think it was exposed. You stay paired; the old key expires after 10 minutes. Other devices are not affected.")
+                            .font(.footnote).foregroundStyle(.secondary)
                         Button("Disconnect this iPhone", role: .destructive) { confirmingDisconnect = true }
-                            .disabled(store.isSending || store.isPairing)
+                            .disabled(store.isSending || store.isPairing || store.isRemovingPairing)
                     } else {
                         Text("Tap Scan QR Code and scan the invitation shown by agentOS Companion on your Mac. Review the Mac's identity before trusting it.")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -543,7 +624,7 @@ private struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { endpoint = store.endpoint; apiKey = store.apiKey }
             .confirmationDialog("Disconnect this iPhone?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
-                Button("Disconnect", role: .destructive) { store.disconnect() }
+                Button("Disconnect", role: .destructive) { Task { await store.disconnectWithAuthentication() } }
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("Remove this iPhone's saved Hermes connection. Pair again with a QR code to reconnect.")
