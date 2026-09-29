@@ -489,6 +489,9 @@ private struct SearchButton: View {
 private struct AppSearchView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var voice = VoiceTranscriber()
+    @State private var queryPrefix = ""
     @State private var query = ""
     @State private var results: [ChatSession] = []
     @State private var searching = false
@@ -504,12 +507,19 @@ private struct AppSearchView: View {
     var body: some View {
         NavigationStack {
             List {
+                if voice.isStarting || voice.isRecording {
+                    Label(voice.isStarting ? "Preparing microphone…" : "Listening… Tap the microphone to stop.", systemImage: "waveform")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if let voiceError = voice.error {
+                    Label(voiceError, systemImage: "mic.slash").font(.footnote).foregroundStyle(.red)
+                }
                 if matchesSettings {
                     Button(action: openSettings) { Label("Settings · Appearance and Connection", systemImage: "gearshape") }
                 }
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ContentUnavailableView("Search agentOS", systemImage: "magnifyingglass",
-                        description: Text("Find conversations by title or message text. Use keyboard dictation to search by voice."))
+                        description: Text("Find conversations by title or message text. Type a query or tap the microphone to search by voice."))
                 } else if searching {
                     HStack { ProgressView(); Text("Searching conversations…") }
                 } else if let error {
@@ -530,7 +540,28 @@ private struct AppSearchView: View {
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Chats and messages")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        if voice.isRecording || voice.isStarting { voice.stop() }
+                        else {
+                            queryPrefix = query.isEmpty ? "" : query + " "
+                            voice.start()
+                        }
+                    } label: {
+                        Image(systemName: voice.isRecording || voice.isStarting ? "stop.circle.fill" : "mic")
+                    }
+                    .accessibilityLabel(voice.isRecording || voice.isStarting ? "Stop search dictation" : "Dictate search")
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { voice.stop(); dismiss() } }
+            }
+            .onChange(of: voice.transcript) { _, text in
+                if !text.isEmpty { query = queryPrefix + text }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { voice.stop() }
+            }
+            .onDisappear { voice.stop() }
             .task(id: query) {
                 let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
                 results = []; error = nil; searching = !term.isEmpty
