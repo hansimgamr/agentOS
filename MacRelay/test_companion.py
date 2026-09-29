@@ -18,6 +18,7 @@ class TemporaryCredentials(unittest.TestCase):
         self.patches = [patch.object(credentials, name, root / name.lower())
                         for name in ("DEVICES", "PAIRING", "LOCK")]
         self.patches.append(patch.object(credentials, "PRIVATE", root))
+        self.patches.append(patch.object(companion, "_endpoint", return_value="https://fixture-mac.local:8643"))
         for change in self.patches:
             change.start()
 

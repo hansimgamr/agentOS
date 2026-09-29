@@ -15,13 +15,12 @@ import credentials
 
 
 HERMES = ("localhost", 8642)
-LISTEN = ("fixture-mac.local", 8643)
 PRIVATE = Path.home() / ".hermes"
 
 def listen_address():
     path = PRIVATE / "relay" / "config.json"
     if not path.exists():
-        return LISTEN
+        raise ValueError("Prepare connection before starting the relay")
     config = json.loads(path.read_text())
     host = config.get("listen_host", "")
     address = ipaddress.ip_address(host)

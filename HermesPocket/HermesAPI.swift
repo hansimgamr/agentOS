@@ -56,7 +56,7 @@ final class HermesAPI: Sendable {
     let baseURL: URL
     let apiKey: String
 
-    init(endpoint: String, apiKey: String, fingerprint: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") throws {
+    init(endpoint: String, apiKey: String, fingerprint: String) throws {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
               let host = url.host?.lowercased(), url.user == nil, url.password == nil,
@@ -65,7 +65,7 @@ final class HermesAPI: Sendable {
         #if !targetEnvironment(simulator)
         guard scheme == "https", url.port == 8643, PairingQR.isLocalHost(host) else { throw HermesError.invalidURL }
         #endif
-        if scheme == "http" && !["localhost", "localhost"].contains(host) { throw HermesError.invalidURL }
+        if scheme == "http" && !["localhost"].contains(host) { throw HermesError.invalidURL }
         guard !apiKey.isEmpty else { throw HermesError.missingKey }
         self.baseURL = URL(string: url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/")!
         self.apiKey = apiKey

@@ -6,7 +6,6 @@ import UIKit
 @MainActor @Observable
 final class ChatStore {
     private let rotationDateKey = "hermes.deviceKeyRotatedAt"
-    private let legacyFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     var endpoint: String
     var apiKey: String
     var pairingCandidate: PairingQR?
@@ -40,31 +39,23 @@ final class ChatStore {
             return
         }
         #if targetEnvironment(simulator)
-        let localEndpoint = "http://localhost:8642"
+        endpoint = UserDefaults.standard.string(forKey: "hermes.endpoint") ?? "http://localhost:8642"
+        apiKey = KeychainStore.readLegacy() ?? ""
         #else
-        let localEndpoint = "https://fixture-mac.local:8643"
+        endpoint = ""
+        apiKey = ""
         #endif
-        let savedEndpoint = UserDefaults.standard.string(forKey: "hermes.endpoint")
-            .flatMap { $0.isEmpty ? nil : $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
-        endpoint = savedEndpoint == "http://localhost:8642" || savedEndpoint == "http://fixture-mac.local:8642" ? localEndpoint : (savedEndpoint ?? localEndpoint)
-        let oldDeviceToken = KeychainStore.read()
-        apiKey = oldDeviceToken ?? KeychainStore.readLegacy() ?? ""
-        if let oldDeviceToken, (endpoint == "https://fixture-mac.local:8643" || endpoint == "https://fixture-mac.local:8643") {
-            let migrated = HermesConnectionProfile(endpoint: endpoint, fingerprint: legacyFingerprint, token: oldDeviceToken, deviceID: nil)
-            if KeychainStore.saveProfile(migrated) {
-                KeychainStore.deleteDeviceKey()
-                KeychainStore.deleteLegacy()
-            }
-        }
     }
 
     private var api: HermesAPI? {
         if let profile = KeychainStore.readProfile() {
             return try? HermesAPI(endpoint: profile.endpoint, apiKey: profile.token, fingerprint: profile.fingerprint)
         }
-        guard endpoint == "https://fixture-mac.local:8643" || endpoint == "https://fixture-mac.local:8643"
-                || endpoint == "http://localhost:8642" else { return nil }
-        return try? HermesAPI(endpoint: endpoint, apiKey: apiKey, fingerprint: legacyFingerprint)
+        #if targetEnvironment(simulator)
+        return try? HermesAPI(endpoint: endpoint, apiKey: apiKey, fingerprint: "")
+        #else
+        return nil
+        #endif
     }
     @ObservationIgnored private var activeStream: Task<Void, Error>?
     @ObservationIgnored private var activeSendID: UUID?
@@ -83,20 +74,9 @@ final class ChatStore {
     func connect() async {
         let revision = connectionRevision
         guard !apiKey.isEmpty else { isConnected = false; needsPairing = false; error = nil; status = "Not connected"; return }
-        guard var api else { error = apiKey.isEmpty ? HermesError.missingKey.localizedDescription : HermesError.invalidURL.localizedDescription; return }
+        guard let api else { error = apiKey.isEmpty ? HermesError.missingKey.localizedDescription : HermesError.invalidURL.localizedDescription; return }
         status = "Connecting…"
         do {
-            #if !targetEnvironment(simulator)
-            if KeychainStore.readProfile() == nil, KeychainStore.read() == nil, KeychainStore.readLegacy() != nil {
-                let token = try await api.migrateLegacyKey()
-                let profile = HermesConnectionProfile(endpoint: endpoint, fingerprint: legacyFingerprint, token: token, deviceID: nil)
-                guard KeychainStore.saveProfile(profile) else { throw HermesError.keychainFailure }
-                KeychainStore.deleteLegacy()
-                apiKey = token
-                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: rotationDateKey)
-                api = try HermesAPI(endpoint: endpoint, apiKey: token, fingerprint: legacyFingerprint)
-            }
-            #endif
             guard revision == connectionRevision else { return }
             try await api.checkConnection()
             guard revision == connectionRevision else { return }
@@ -142,10 +122,8 @@ final class ChatStore {
     private func pairingInvitation(from url: URL) -> PairingQR? {
         guard !pairingInProgress, !rotationInProgress, !isSending else { return nil }
         let profile = KeychainStore.readProfile()
-        let legacyEndpoint = profile?.endpoint ?? (["https://fixture-mac.local:8643", "https://fixture-mac.local:8643"].contains(endpoint)
-            ? endpoint : "https://fixture-mac.local:8643")
-        let candidate = PairingQR.parse(url, trustedEndpoint: legacyEndpoint,
-                                        trustedFingerprint: profile?.fingerprint ?? legacyFingerprint)
+        let candidate = PairingQR.parse(url, trustedEndpoint: profile?.endpoint,
+                                        trustedFingerprint: profile?.fingerprint)
         guard let candidate else {
             error = "This pairing QR code is invalid or unsupported."
             return nil

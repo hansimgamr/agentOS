@@ -4,12 +4,11 @@ import hashlib
 import http.client
 import ssl
 
-from relay import listen_address, PRIVATE, api_key
+from relay import listen_address, PRIVATE, api_key, HERMES
 
 
 cert = PRIVATE / "relay" / "relay.crt"
 fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
-assert fingerprint == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 def get(path, key=None):
     connection = http.client.HTTPSConnection(*listen_address(), context=ssl._create_unverified_context(), timeout=10)
     connection.connect()
@@ -23,7 +22,7 @@ def get(path, key=None):
 
 assert get("/health") == 401
 assert get("/health", api_key()) == 401
-direct = http.client.HTTPConnection("localhost", 8642, timeout=10)
+direct = http.client.HTTPConnection(*HERMES, timeout=10)
 direct.request("GET", "/api/sessions?limit=1", headers={"Authorization": "Bearer " + api_key()})
 response = direct.getresponse()
 assert response.status == 200

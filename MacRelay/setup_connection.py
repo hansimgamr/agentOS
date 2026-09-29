@@ -26,9 +26,14 @@ def hermes_executable():
 
 
 def local_address():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
-        connection.connect(('fixture-mac.local', 9))  # Route lookup only; no packet is sent.
-        address = connection.getsockname()[0]
+    route = subprocess.check_output(['/sbin/route', '-n', 'get', 'default'], text=True,
+                                    stderr=subprocess.DEVNULL, timeout=10)
+    interface = next((line.split(':', 1)[1].strip() for line in route.splitlines()
+                      if line.strip().startswith('interface:')), None)
+    if not interface:
+        raise RuntimeError('local_network_required')
+    address = subprocess.check_output(['/usr/sbin/ipconfig', 'getifaddr', interface],
+                                      text=True, stderr=subprocess.DEVNULL, timeout=10).strip()
     value = ipaddress.ip_address(address)
     if not value.is_private or value.is_loopback or value.is_link_local or value.is_unspecified or value.is_multicast:
         raise RuntimeError('local_network_required')
@@ -84,7 +89,7 @@ def prepare():
         # Healthy Hermes instances need no configuration changes or restart.
         import companion
         if not companion._backend_health()['available']:
-            for key, value in [('enabled', 'true'), ('host', 'localhost'), ('port', '8642')]:
+            for key, value in [('enabled', 'true'), ('host', socket.gethostbyname('localhost')), ('port', '8642')]:
                 run([executable, 'config', 'set', 'platforms.api_server.' + key, value])
             if not (AGENTS / 'ai.hermes.gateway.plist').exists():
                 run([executable, 'gateway', 'install'])

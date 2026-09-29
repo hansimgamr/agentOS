@@ -2,7 +2,7 @@ import Foundation
 
 @main
 enum NearbyPairingChecks {
-    static let fakeInvitation = "hermespocket://pair?v=2&endpoint=https%3A%2F%2F192.168.2.35%3A8643&fingerprint=\(String(repeating: "a", count: 64))&code=\(String(repeating: "b", count: 43))"
+    static let fakeInvitation = "hermespocket://pair?v=2&endpoint=https%3A%2F%2Ffixture-mac.local%3A8643&fingerprint=\(String(repeating: "a", count: 64))&code=\(String(repeating: "b", count: 43))"
     static let fakeDeviceToken = "FAKE-DEVICE-TOKEN-DO-NOT-USE"
 
     static func main() throws {

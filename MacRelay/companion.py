@@ -63,7 +63,7 @@ def _relay_health(fingerprint):
         status = connection.getresponse().status
         # Relay endpoints require per-device credentials; 401 proves it is live.
         return {"available": status == 401, "detail": "ready" if status == 401 else "unavailable"}
-    except (OSError, ssl.SSLError, http.client.HTTPException):
+    except (OSError, ValueError, ssl.SSLError, http.client.HTTPException):
         return {"available": False, "detail": "unavailable"}
     finally:
         if connection:
@@ -77,19 +77,23 @@ def status():
     except (OSError, ValueError, ssl.SSLError):
         pass
     relay_state = _relay_health(fingerprint) if fingerprint else {"available": False, "detail": "not_configured"}
+    try:
+        endpoint = _endpoint()
+    except (OSError, ValueError):
+        endpoint = None
+        relay_state = {"available": False, "detail": "not_configured"}
     result = {
         "ok": True,
         "hermes_installed": setup_connection.hermes_executable() is not None,
         "backend": _backend_health(),
         "relay": {
             "available": relay_state["available"],
-            "endpoint": _endpoint(),
+            "endpoint": endpoint,
             "fingerprint": fingerprint,
         },
         "pending_pairing": credentials.pending_pairing(),
     }
-    if fingerprint:
-        result["relay"]["detail"] = relay_state["detail"]
+    result["relay"]["detail"] = relay_state["detail"]
     return result
 
 
