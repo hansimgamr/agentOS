@@ -1,10 +1,13 @@
 import SwiftUI
 import LocalAuthentication
+import AppIntents
 
 @main
 struct HermesPocketApp: App {
     @State private var store = ChatStore()
     @AppStorage("appearance") private var appearance = "system"
+
+    init() { AgentShortcuts.updateAppShortcutParameters() }
 
     var body: some Scene {
         WindowGroup {
@@ -26,8 +29,11 @@ private struct ProtectedRoot: View {
 
     var body: some View {
         Group {
-            if unlocked && scenePhase == .active {
+            if unlocked {
                 RootView()
+                    .opacity(scenePhase == .active ? 1 : 0)
+                    .allowsHitTesting(scenePhase == .active)
+                    .accessibilityHidden(scenePhase != .active)
             } else {
                 VStack(spacing: 20) {
                     Image(systemName: "lock.shield.fill").font(.system(size: 48)).foregroundStyle(.indigo)
@@ -44,7 +50,7 @@ private struct ProtectedRoot: View {
         }
         .task { await unlock() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { unlocked = false }
+            if phase == .background { unlocked = false }
             else { Task { await unlock() } }
         }
         .onOpenURL { url in
@@ -79,5 +85,26 @@ private struct ProtectedRoot: View {
         guard let pendingPairing, unlocked else { return }
         self.pendingPairing = nil
         await store.pair(from: pendingPairing)
+    }
+}
+
+
+struct OpenAgentSearch: AppIntent {
+    static var title: LocalizedStringResource = "Search agentOS"
+    static var description = IntentDescription("Open private conversation search in agentOS.")
+    static var openAppWhenRun: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set(true, forKey: "openSearchRequested")
+        return .result()
+    }
+}
+
+struct AgentShortcuts: AppShortcutsProvider {
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: OpenAgentSearch(),
+                    phrases: ["Search in \(.applicationName)", "Open search in \(.applicationName)"],
+                    shortTitle: "Search agentOS", systemImageName: "magnifyingglass")
     }
 }

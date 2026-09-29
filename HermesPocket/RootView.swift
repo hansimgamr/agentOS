@@ -6,6 +6,8 @@ private enum MainTab: Hashable { case chats, settings }
 
 struct RootView: View {
     @Environment(ChatStore.self) private var store
+    @AppStorage("openSearchRequested") private var openSearchRequested = false
+    @State private var showingSearch = false
     @State private var chatToDelete: ChatSession?
     @State private var deletionError: String?
     @State private var selectedTab: MainTab = .chats
@@ -22,6 +24,21 @@ struct RootView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(MainTab.settings)
+        }
+        .sheet(isPresented: $showingSearch) {
+            AppSearchView(openSettings: {
+                showingSearch = false
+                selectedTab = .settings
+            }) { session in
+                if !store.sessions.contains(where: { $0.id == session.id }) { store.sessions.append(session) }
+                selectedTab = .chats
+                showingSearch = false
+                openConversation(session.id)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAgentSearch)) { _ in showingSearch = true }
+        .onChange(of: openSearchRequested, initial: true) { _, requested in
+            if requested { showingSearch = true; openSearchRequested = false }
         }
         .confirmationDialog("Delete conversation?", isPresented: Binding(
             get: { chatToDelete != nil }, set: { if !$0 { chatToDelete = nil } }
@@ -137,6 +154,9 @@ struct RootView: View {
                 }
             }
             .navigationTitle("Chats")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { SearchButton() }
+            }
     }
 
     private func openConversation(_ id: String) {
@@ -158,6 +178,8 @@ struct RootView: View {
 
 private struct ChatView: View {
     @Environment(ChatStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var dictationPrefix = ""
     @State private var showingApproval = false
     @State private var voice = VoiceTranscriber()
     @Binding var selectedTab: MainTab
@@ -197,6 +219,7 @@ private struct ChatView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { SearchButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await store.connect() } } label: {
                     Image(systemName: store.isConnected ? "checkmark.circle.fill" : "arrow.clockwise.circle")
@@ -205,8 +228,11 @@ private struct ChatView: View {
                 .accessibilityLabel(store.isConnected ? "Connected; refresh conversations" : "Reconnect to Hermes")
             }
         }
-        .onChange(of: voice.transcript) { _, text in if !text.isEmpty { store.draft = text } }
+        .onChange(of: voice.transcript) { _, text in if !text.isEmpty { store.draft = dictationPrefix + text } }
         .onDisappear { voice.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { voice.stop() }
+        }
         .onChange(of: store.pendingApproval?.id, initial: true) { _, id in
             showingApproval = id != nil
         }
@@ -294,9 +320,12 @@ private struct ChatView: View {
                     .padding(.vertical, 10)
                     .accessibilityLabel("Message Hermes")
                     .onSubmit { Task { await store.send() } }
-                Button { if voice.isRecording { voice.stop() } else { voice.start() } } label: { Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic").font(.title3).frame(minWidth: 44, minHeight: 44) }
+                Button { if voice.isRecording { voice.stop() } else {
+                    dictationPrefix = store.draft.isEmpty ? "" : store.draft + " "
+                    voice.start()
+                } } label: { Image(systemName: voice.isRecording ? "stop.circle.fill" : "mic").font(.title3).frame(minWidth: 44, minHeight: 44) }
                     .accessibilityLabel(voice.isRecording ? "Stop dictation" : "Dictate message")
-                Button { if store.isSending { store.stop() } else { Task { await store.send() } } } label: {
+                Button { voice.stop(); if store.isSending { store.stop() } else { Task { await store.send() } } } label: {
                     Image(systemName: store.isSending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.title).frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(!store.isSending && store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.pendingImage == nil)
@@ -418,6 +447,7 @@ private struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { SearchButton() } }
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { endpoint = store.endpoint; apiKey = store.apiKey }
         }
@@ -440,5 +470,80 @@ private struct SettingsView: View {
         #endif
         await store.connect()
         checking = false
+    }
+}
+
+
+extension Notification.Name {
+    static let openAgentSearch = Notification.Name("openAgentSearch")
+}
+
+private struct SearchButton: View {
+    var body: some View {
+        Button("Search agentOS", systemImage: "magnifyingglass") {
+            NotificationCenter.default.post(name: .openAgentSearch, object: nil)
+        }
+    }
+}
+
+private struct AppSearchView: View {
+    @Environment(ChatStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var results: [ChatSession] = []
+    @State private var searching = false
+    @State private var error: String?
+    let openSettings: () -> Void
+    let open: (ChatSession) -> Void
+
+    private var matchesSettings: Bool {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !term.isEmpty && "settings appearance theme light dark system connection pairing access".localizedStandardContains(term)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if matchesSettings {
+                    Button(action: openSettings) { Label("Settings · Appearance and Connection", systemImage: "gearshape") }
+                }
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView("Search agentOS", systemImage: "magnifyingglass",
+                        description: Text("Find conversations by title or message text. Use keyboard dictation to search by voice."))
+                } else if searching {
+                    HStack { ProgressView(); Text("Searching conversations…") }
+                } else if let error {
+                    ContentUnavailableView("Search unavailable", systemImage: "wifi.exclamationmark", description: Text(error))
+                } else if results.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    ForEach(results) { session in
+                        Button { open(session) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("🪽 \(session.title)").font(.headline)
+                                Text(session.preview).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Chats and messages")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task(id: query) {
+                let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                results = []; error = nil; searching = !term.isEmpty
+                guard !term.isEmpty else { return }
+                do {
+                    try await Task.sleep(for: .milliseconds(350))
+                    let matches = try await store.searchChats(term)
+                    try Task.checkCancellation()
+                    results = matches; searching = false
+                } catch {
+                    if !Task.isCancelled { self.error = error.localizedDescription; searching = false }
+                }
+            }
+        }
     }
 }

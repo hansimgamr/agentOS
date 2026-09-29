@@ -114,8 +114,8 @@ struct HermesAPI: Sendable {
         return token
     }
 
-    func sessions() async throws -> [ChatSession] {
-        let data = try await get("/api/sessions?limit=50")
+    func sessions(offset: Int = 0, limit: Int = 50) async throws -> [ChatSession] {
+        let data = try await get("/api/sessions?limit=\(limit)&offset=\(offset)")
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rows = root["data"] as? [[String: Any]] else { throw HermesError.malformedResponse }
         return rows.compactMap { row in
@@ -123,6 +123,23 @@ struct HermesAPI: Sendable {
             let date = (row["last_active"] as? Double).map { Date(timeIntervalSince1970: $0) }
             return ChatSession(id: id, title: row["title"] as? String,
                               preview: row["preview"] as? String, lastActive: date)
+        }
+    }
+
+    func searchMessages(sessionID: String, query: String) async throws -> String? {
+        let id = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        var offset = 0
+        while true {
+            try Task.checkCancellation()
+            let data = try await get("/api/sessions/\(id)/messages?limit=500&offset=\(offset)&order=oldest")
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rows = root["data"] as? [[String: Any]] else { throw HermesError.malformedResponse }
+            for row in rows {
+                let text = Self.textContent(row["content"])
+                if let snippet = ChatSearch.snippet(in: text, query: query) { return snippet }
+            }
+            if rows.count < 500 { return nil }
+            offset += rows.count
         }
     }
 

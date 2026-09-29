@@ -71,3 +71,13 @@ enum ChatTimestamp {
         return formatter.string(from: date)
     }
 }
+
+
+enum ChatSearch {
+    static func snippet(in text: String, query: String) -> String? {
+        guard !query.isEmpty,
+              let range = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else { return nil }
+        let start = text.index(range.lowerBound, offsetBy: -40, limitedBy: text.startIndex) ?? text.startIndex
+        return String(text[start...].prefix(180))
+    }
+}

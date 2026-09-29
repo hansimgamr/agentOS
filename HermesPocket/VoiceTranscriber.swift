@@ -5,6 +5,9 @@ import Observation
 @MainActor @Observable
 final class VoiceTranscriber {
     var isRecording = false
+    var isStarting = false
+    private var generation = 0
+    private var tapInstalled = false
     var transcript = ""
     var error: String?
 
@@ -14,14 +17,19 @@ final class VoiceTranscriber {
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
 
     func start() {
-        guard !isRecording else { stop(); return }
+        guard !isRecording && !isStarting else { stop(); return }
+        generation += 1
+        let attempt = generation
+        isStarting = true
         error = nil
         SFSpeechRecognizer.requestAuthorization { [weak self] speechStatus in
             Task { @MainActor in
-                guard let self else { return }
-                guard speechStatus == .authorized else { self.error = "Allow Speech Recognition in Settings to dictate."; return }
+                guard let self, self.generation == attempt else { return }
+                guard speechStatus == .authorized else { self.error = "Allow Speech Recognition in Settings to dictate."; self.isStarting = false; return }
                 AVAudioApplication.requestRecordPermission { granted in
                     Task { @MainActor in
+                        guard self.generation == attempt else { return }
+                        self.isStarting = false
                         guard granted else { self.error = "Allow microphone access in Settings to dictate."; return }
                         self.begin()
                     }
@@ -43,22 +51,28 @@ final class VoiceTranscriber {
             self.request = request
             let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
+            tapInstalled = true
             engine.prepare()
             try engine.start()
             transcript = ""
             isRecording = true
+            let attempt = generation
             task = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.generation == attempt else { return }
                     if let result { self.transcript = result.bestTranscription.formattedString }
-                    if error != nil { self.stop() }
+                    if let error { self.error = error.localizedDescription }
+                    if error != nil || result?.isFinal == true { self.stop() }
                 }
             }
         } catch { self.error = error.localizedDescription; stop() }
     }
 
     func stop() {
-        if engine.isRunning { engine.stop(); engine.inputNode.removeTap(onBus: 0) }
+        generation += 1
+        isStarting = false
+        if engine.isRunning { engine.stop() }
+        if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
         request?.endAudio()
         task?.cancel()
         request = nil

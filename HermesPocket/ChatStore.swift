@@ -104,6 +104,28 @@ final class ChatStore {
         } catch { self.error = error.localizedDescription }
     }
 
+    func searchChats(_ query: String) async throws -> [ChatSession] {
+        guard let api else { throw HermesError.missingKey }
+        var results: [ChatSession] = []
+        var seen = Set<String>()
+        var offset = 0
+        while true {
+            try Task.checkCancellation()
+            let page = try await api.sessions(offset: offset, limit: 200)
+            let previousCount = seen.count
+            for var session in page where seen.insert(session.id).inserted {
+                if session.title.localizedStandardContains(query) {
+                    results.append(session)
+                } else if let snippet = try await api.searchMessages(sessionID: session.id, query: query) {
+                    session.preview = snippet
+                    results.append(session)
+                }
+            }
+            if page.count < 200 || seen.count == previousCount { return results }
+            offset += page.count
+        }
+    }
+
     func deleteSession(_ id: String) async throws {
         guard !isSending, !deletingSessionIDs.contains(id) else { return }
         guard let api else { throw HermesError.missingKey }
