@@ -27,3 +27,4 @@ secrets.json
 *.app/
 *.dmg
 *.xcarchive/
+*.pkg
