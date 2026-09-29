@@ -258,15 +258,17 @@ final class ChatStore {
         }
     }
 
-    func createSession() async {
-        guard let api else { error = HermesError.missingKey.localizedDescription; return }
-        do {
-            let session = try await api.createSession()
-            sessions.insert(session, at: 0)
-            selectedSessionID = session.id
-            messages = []
-            error = nil
-        } catch { self.error = error.localizedDescription }
+    @discardableResult
+    func startNewConversation() -> Bool {
+        guard !isSending, !pairingInProgress else { return false }
+        selectedSessionID = nil
+        messages = []
+        draft = ""
+        pendingImage = nil
+        pendingApproval = nil
+        toolActivity = nil
+        error = nil
+        return true
     }
 
     func select(_ session: ChatSession) async {
@@ -277,8 +279,15 @@ final class ChatStore {
 
     func loadMessages(sessionID: String) async {
         guard let api else { return }
-        do { messages = try await api.messages(sessionID: sessionID); error = nil }
-        catch { self.error = error.localizedDescription }
+        do {
+            let loaded = try await api.messages(sessionID: sessionID)
+            guard selectedSessionID == sessionID else { return }
+            messages = loaded
+            error = nil
+        } catch {
+            guard selectedSessionID == sessionID else { return }
+            self.error = error.localizedDescription
+        }
     }
 
     func send() async {

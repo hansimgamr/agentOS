@@ -1,18 +1,24 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import VisionKit
+import AVFoundation
 
 private enum MainTab: Hashable { case chats, settings }
+private enum ChatRoute: Hashable { case newChat, conversation(String) }
 
 struct RootView: View {
     @Environment(ChatStore.self) private var store
     @AppStorage("openSearchRequested") private var openSearchRequested = false
     @State private var showingSearch = false
+    @State private var showingScanner = false
+    @State private var showingNearbyPairing = false
+    @State private var scannedPairingURL: URL?
     @State private var chatToDelete: ChatSession?
     @State private var deletionError: String?
     @State private var selectedTab: MainTab = .chats
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var chatPath: [String] = []
+    @State private var chatPath: [ChatRoute] = []
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var selectedPhoto: PhotosPickerItem?
 
@@ -37,6 +43,34 @@ struct RootView: View {
             }
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showingScanner, onDismiss: {
+            if let url = scannedPairingURL {
+                scannedPairingURL = nil
+                store.preparePair(from: url)
+                if store.pairingCandidate == nil { selectedTab = .settings }
+            }
+        }) {
+            PairingScannerView { url in
+                scannedPairingURL = url
+                showingScanner = false
+            }
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showingNearbyPairing, onDismiss: {
+            if let url = scannedPairingURL {
+                scannedPairingURL = nil
+                store.preparePair(from: url)
+                if store.pairingCandidate == nil { selectedTab = .settings }
+            }
+        }) {
+            NearbyPairingView(scanned: { url in
+                scannedPairingURL = url
+                showingNearbyPairing = false
+            })
+            .presentationDragIndicator(.visible)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nearbyAgentPairing)) { _ in showingNearbyPairing = true }
+        .onReceive(NotificationCenter.default.publisher(for: .scanAgentPairing)) { _ in showingScanner = true }
         .onReceive(NotificationCenter.default.publisher(for: .openAgentSearch)) { _ in showingSearch = true }
         .onChange(of: openSearchRequested, initial: true) { _, requested in
             if requested { showingSearch = true; openSearchRequested = false }
@@ -49,7 +83,7 @@ struct RootView: View {
                     do {
                         try await store.deleteSession(session.id)
                         if !store.sessions.contains(where: { $0.id == session.id }) {
-                            chatPath.removeAll { $0 == session.id }
+                            chatPath.removeAll { $0 == .conversation(session.id) }
                             compactColumn = .sidebar
                         }
                     } catch { deletionError = error.localizedDescription }
@@ -91,10 +125,11 @@ struct RootView: View {
         if horizontalSizeClass == .compact {
             NavigationStack(path: $chatPath) {
                 conversationList
-                    .navigationDestination(for: String.self) { id in
+                    .navigationDestination(for: ChatRoute.self) { route in
                         ChatView(selectedTab: $selectedTab, selectedPhoto: $selectedPhoto)
-                            .task(id: id) {
-                                if let session = store.sessions.first(where: { $0.id == id }) {
+                            .task(id: route) {
+                                if case .conversation(let id) = route,
+                                   let session = store.sessions.first(where: { $0.id == id }) {
                                     await store.select(session)
                                 }
                             }
@@ -114,9 +149,13 @@ struct RootView: View {
     private var conversationList: some View {
             List {
                 Section {
+                    if !store.isConnected {
+                        ScanPairingButton()
+                        NearbyPairingButton()
+                    }
                     if store.sessions.isEmpty {
                         Button {
-                            if store.isConnected { Task { await startConversation() } }
+                            if store.isConnected { startConversation() }
                             else { selectedTab = .settings }
                         } label: {
                             Label {
@@ -160,29 +199,30 @@ struct RootView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     SearchButton()
-                    Button { Task { await startConversation() } } label: {
+                    Button { startConversation() } label: {
                         Image(systemName: "square.and.pencil")
                     }
                     .accessibilityLabel("New conversation")
+                    .disabled(store.isSending || store.isPairing)
                 }
             }
     }
 
     private func openConversation(_ id: String) {
         if horizontalSizeClass == .compact {
-            chatPath = [id]
+            chatPath = [.conversation(id)]
         } else if let session = store.sessions.first(where: { $0.id == id }) {
             compactColumn = .detail
             Task { await store.select(session) }
         }
     }
 
-    private func startConversation() async {
-        await store.createSession()
-        if store.error == nil, let id = store.selectedSessionID {
-            openConversation(id)
-        }
+    private func startConversation() {
+        guard store.startNewConversation() else { return }
+        if horizontalSizeClass == .compact { chatPath = [.newChat] }
+        else { compactColumn = .detail }
     }
+
 }
 
 private struct ChatView: View {
@@ -207,7 +247,12 @@ private struct ChatView: View {
                 } description: {
                     Text(store.status + "\nOpen Settings to pair with your Mac.")
                 } actions: {
-                    Button("Connection settings") { selectedTab = .settings }.buttonStyle(.borderedProminent)
+                    VStack(spacing: 12) {
+                        ScanPairingButton()
+                        NearbyPairingButton()
+                        Button("Connection settings") { selectedTab = .settings }
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.selectedSessionID == nil {
@@ -463,11 +508,15 @@ private struct SettingsView: View {
                         Button("Disconnect this iPhone", role: .destructive) { confirmingDisconnect = true }
                             .disabled(store.isSending || store.isPairing)
                     } else {
-                        Text("To pair, open the Camera app and scan the pairing QR code shown on your Mac. Review the Mac's hostname before trusting it.")
+                        Text("Tap Scan QR Code and scan the invitation shown by agentOS Companion on your Mac. Review the Mac's identity before trusting it.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red) }
                     #endif
+                    if !store.isConnected {
+                        ScanPairingButton()
+                        NearbyPairingButton()
+                    }
                     Button { Task { await saveAndConnect() } } label: {
                         Label(checking ? "Connecting…" : "Save and connect", systemImage: "arrow.triangle.2.circlepath")
                             .frame(maxWidth: .infinity, minHeight: 44)
@@ -510,6 +559,8 @@ private struct SettingsView: View {
 
 
 extension Notification.Name {
+    static let nearbyAgentPairing = Notification.Name("nearbyAgentPairing")
+    static let scanAgentPairing = Notification.Name("scanAgentPairing")
     static let openAgentSearch = Notification.Name("openAgentSearch")
 }
 
@@ -659,6 +710,114 @@ private struct VoiceSearchField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             textField.resignFirstResponder()
             return true
+        }
+    }
+}
+
+private struct ScanPairingButton: View {
+    var body: some View {
+        Button("Scan QR Code", systemImage: "qrcode.viewfinder") {
+            NotificationCenter.default.post(name: .scanAgentPairing, object: nil)
+        }
+    }
+}
+
+private struct PairingScannerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var authorized = false
+    @State private var unavailable: String?
+    let scanned: (URL) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let unavailable {
+                    ContentUnavailableView {
+                        Label("Camera unavailable", systemImage: "camera.fill")
+                    } description: {
+                        Text(unavailable)
+                    } actions: {
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
+                } else if authorized && scenePhase == .active {
+                    PairingCamera(scanned: scanned, failed: { unavailable = $0 })
+                        .overlay(alignment: .bottom) {
+                            Text("Point at the pairing QR code in agentOS Companion on your Mac.")
+                                .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                                .padding()
+                        }
+                } else { ProgressView("Preparing camera…") }
+            }
+            .navigationTitle("Scan Pairing QR")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) {
+                Button("Close scanner", systemImage: "xmark") { dismiss() }
+            } }
+            .task {
+                let permission = await AVCaptureDevice.requestAccess(for: .video)
+                guard !Task.isCancelled else { return }
+                guard permission else {
+                    unavailable = "Allow camera access in Settings, or scan the Mac's QR code with the iPhone Camera app."
+                    return
+                }
+                guard DataScannerViewController.isSupported && DataScannerViewController.isAvailable else {
+                    unavailable = "Scanning is unavailable on this device. You can also scan the Mac's QR code with the Camera app."
+                    return
+                }
+                authorized = true
+            }
+        }
+    }
+}
+
+private struct PairingCamera: UIViewControllerRepresentable {
+    let scanned: (URL) -> Void
+    let failed: (String) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])],
+            recognizesMultipleItems: false, isGuidanceEnabled: true, isHighlightingEnabled: true)
+        scanner.delegate = context.coordinator
+        return scanner
+    }
+    func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
+        guard !scanner.isScanning, !context.coordinator.finished else { return }
+        do { try scanner.startScanning() }
+        catch { Task { @MainActor in failed("Camera scanning could not start. Close this sheet and try again, or use the Camera app.") } }
+    }
+    static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {
+        coordinator.finished = true
+        scanner.stopScanning()
+    }
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let parent: PairingCamera
+        var finished = false
+        init(_ parent: PairingCamera) { self.parent = parent }
+        func dataScanner(_ scanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+            guard !finished else { return }
+            for case .barcode(let code) in addedItems {
+                guard let payload = code.payloadStringValue, let url = URL(string: payload),
+                      url.scheme?.lowercased() == "hermespocket", url.host?.lowercased() == "pair" else { continue }
+                finished = true
+                scanner.stopScanning()
+                parent.scanned(url)
+                return
+            }
+        }
+        func dataScanner(_ scanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
+            scanner.stopScanning()
+            parent.failed("Camera scanning is unavailable. Close this sheet and try again, or use the Camera app.")
+        }
+    }
+}
+
+private struct NearbyPairingButton: View {
+    var body: some View {
+        Button("Pair Nearby Mac", systemImage: "laptopcomputer") {
+            NotificationCenter.default.post(name: .nearbyAgentPairing, object: nil)
         }
     }
 }

@@ -15,8 +15,9 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources/MacRelay"
 swiftc -parse-as-library -target "$(uname -m)-apple-macos14.0" \
-  "$ROOT/MacCompanion/main.swift" -o "$CONTENTS/MacOS/agentOS Companion" \
-  -framework SwiftUI -framework AppKit -framework CoreImage
+  "$ROOT/MacCompanion/main.swift" "$ROOT/Shared/NearbyPairingProtocol.swift" \
+  -o "$CONTENTS/MacOS/agentOS Companion" \
+  -framework SwiftUI -framework AppKit -framework CoreImage -framework CryptoKit -framework MultipeerConnectivity
 cp "$ROOT/MacRelay/companion.py" "$ROOT/MacRelay/credentials.py" "$ROOT/MacRelay/relay.py" "$CONTENTS/Resources/MacRelay/"
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -29,6 +30,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>agentOS Companion uses your local network to securely pair with a nearby iPhone when you choose Pair nearby.</string>
+  <key>NSBonjourServices</key>
+  <array><string>_agentos-pair._tcp</string><string>_agentos-pair._udp</string></array>
 </dict>
 </plist>
 PLIST

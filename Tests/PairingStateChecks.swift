@@ -41,6 +41,17 @@ import Foundation
         TestKeychainStore.profile = replacement
         PairingTestControl.releaseRotation(); await rotationTask.value
         precondition(TestKeychainStore.profile == replacement && rotating.apiKey == old.token)
+        let drafting = setup()
+        drafting.selectedSessionID = "old-session"
+        drafting.messages = [ChatMessage(role: .user, content: "old message")]
+        drafting.draft = "old draft"
+        drafting.error = "old error"
+        precondition(drafting.startNewConversation())
+        precondition(drafting.selectedSessionID == nil && drafting.messages.isEmpty && drafting.draft.isEmpty && drafting.error == nil)
+        precondition(TestKeychainStore.profile == old)
+        drafting.isSending = true
+        drafting.draft = "sending draft"
+        precondition(!drafting.startNewConversation() && drafting.draft == "sending draft")
         print("Pairing state checks passed: failures preserve profile, success replaces state, stale connect and rotation are ignored")
     }
 }

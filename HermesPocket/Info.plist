@@ -33,6 +33,8 @@
 	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan a pairing QR code from agentOS Companion on your Mac.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock your private Hermes conversations and device access.</string>
 	<key>NSAppTransportSecurity</key>
@@ -40,6 +42,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array><string>_agentos-pair._tcp</string><string>_agentos-pair._udp</string></array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to the Hermes agent running on your Mac over your private network.</string>
 	<key>NSMicrophoneUsageDescription</key>

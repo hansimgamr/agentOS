@@ -14,6 +14,8 @@
 		A10000000000000000000005 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* ChatStore.swift */; };
 		A10000000000000000000006 /* VoiceTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* VoiceTranscriber.swift */; };
 		A10000000000000000000007 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* RootView.swift */; };
+		A10000000000000000000010 /* NearbyPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* NearbyPairingView.swift */; };
+		A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* NearbyPairingProtocol.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +28,8 @@
 		B10000000000000000000007 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		B10000000000000000000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000009 /* HermesPocket.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HermesPocket.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000010 /* NearbyPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NearbyPairingView.swift"; sourceTree = "<group>"; };
+		B10000000000000000000011 /* NearbyPairingProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../Shared/NearbyPairingProtocol.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -57,6 +61,8 @@
 				B10000000000000000000005 /* ChatStore.swift */,
 				B10000000000000000000006 /* VoiceTranscriber.swift */,
 				B10000000000000000000007 /* RootView.swift */,
+				B10000000000000000000010 /* NearbyPairingView.swift */,
+				B10000000000000000000011 /* NearbyPairingProtocol.swift */,
 				B10000000000000000000008 /* Info.plist */,
 			);
 			path = HermesPocket;
@@ -143,6 +149,8 @@
 				A10000000000000000000004 /* HermesAPI.swift in Sources */,
 				A10000000000000000000005 /* ChatStore.swift in Sources */,
 				A10000000000000000000006 /* VoiceTranscriber.swift in Sources */,
+				A10000000000000000000010 /* NearbyPairingView.swift in Sources */,
+				A10000000000000000000011 /* NearbyPairingProtocol.swift in Sources */,
 				A10000000000000000000007 /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

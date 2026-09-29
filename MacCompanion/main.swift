@@ -1,20 +1,24 @@
 import AppKit
 import CoreImage.CIFilterBuiltins
+import MultipeerConnectivity
 import SwiftUI
 
 @main
 struct AgentOSCompanionApp: App {
+    @AppStorage("companion.appearance") private var appearance = "system"
+
     var body: some Scene {
         Window("agentOS Companion", id: "main") {
-            CompanionView()
+            CompanionView(appearance: $appearance)
                 .frame(minWidth: 540, minHeight: 620)
+                .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
         }
         .windowResizability(.contentSize)
     }
 }
 
 @MainActor
-final class CompanionModel: ObservableObject {
+final class CompanionModel: NSObject, ObservableObject {
     @Published var status: [String: Any] = [:]
     @Published var devices: [[String: Any]] = []
     @Published var qrImage: NSImage?
@@ -23,6 +27,11 @@ final class CompanionModel: ObservableObject {
     @Published var error: String?
     @Published var feedback: String?
     @Published var busy = false
+    @Published var nearbyStatus = ""
+    @Published var nearbyPeerName: String?
+    @Published var showingNearbyRequest = false
+    @Published var nearbyComparisonCode: String?
+    @Published var nearbySecondsRemaining = 0
     private var ticker: Timer?
     private var ticketID: String?
     private var pairingDeviceCount = 0
@@ -30,8 +39,20 @@ final class CompanionModel: ObservableObject {
     private var isActive = false
     private var refreshing = false
     private var refreshAgain = false
+    private let localPeer = MCPeerID(displayName: "agentOS Mac")
+    private var nearbySession: MCSession?
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var invitationHandler: ((Bool, MCSession?) -> Void)?
+    private var acceptedPeer: MCPeerID?
+    private var handshake: NearbyHandshake?
+    private var nearbyDeadline: Date?
+    private var nearbyActive = false
+    private var nearbyTicketID: String?
+    private var nearbyGeneration = 0
+    private var nearbyInvitationSent = false
 
-    init() {
+    override init() {
+        super.init()
         refresh()
         ticker = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -40,9 +61,11 @@ final class CompanionModel: ObservableObject {
 
     var remaining: Int { secondsRemaining }
     var pairingActive: Bool { qrImage != nil && remaining > 0 }
+    var nearbyPairingActive: Bool { nearbyActive }
 
     func becameActive() {
         isActive = true
+        interactionGeneration += 1
         refresh()
     }
 
@@ -69,12 +92,15 @@ final class CompanionModel: ObservableObject {
                 let pending = newStatus["pending_pairing"] as? [String: Any]
                 let pendingID = pending?["ticket_id"] as? String
                 if let localTicket = ticketAtStart, localTicket == ticketID, pendingID != localTicket {
-                    let paired = pendingID == nil && remaining > 0 && listedDevices.count > pairingDeviceCount
+                    let paired = pendingID == nil && listedDevices.count > pairingDeviceCount
                     qrImage = nil
                     pairingExpiry = nil
                     ticketID = nil
                     secondsRemaining = 0
-                    if paired { feedback = "Invitation accepted. Check that the device shows Connected." }
+                    if paired {
+                        feedback = "Invitation accepted. Check that the device shows Connected."
+                        if nearbyActive { finishNearby(success: true) }
+                    }
                 }
                 status = newStatus
                 devices = listedDevices
@@ -84,7 +110,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func createPairing() {
-        guard !busy, isActive else { return }
+        guard !busy, isActive, !nearbyActive else { return }
         busy = true
         let generation = interactionGeneration
         Task {
@@ -133,6 +159,77 @@ final class CompanionModel: ObservableObject {
         }
     }
 
+    func startNearbyPairing() {
+        guard isActive, !busy, !pairingActive, !nearbyActive else { return }
+        nearbyActive = true
+        nearbyGeneration += 1
+        nearbyDeadline = Date().addingTimeInterval(300)
+        nearbySecondsRemaining = 300
+        nearbyComparisonCode = nil
+        nearbyPeerName = nil
+        nearbyStatus = "Looking for a nearby iPhone…"
+        feedback = nil
+        let session = MCSession(peer: localPeer, securityIdentity: nil, encryptionPreference: .required)
+        session.delegate = self
+        nearbySession = session
+        let service = MCNearbyServiceAdvertiser(peer: localPeer, discoveryInfo: nil, serviceType: "agentos-pair")
+        service.delegate = self
+        advertiser = service
+        service.startAdvertisingPeer()
+    }
+
+    func approveNearbyPeer() {
+        guard nearbyActive, let handler = invitationHandler, let session = nearbySession else { return }
+        invitationHandler = nil
+        showingNearbyRequest = false
+        nearbyPeerName = nil
+        handler(true, session)
+        nearbyStatus = "Connecting securely…"
+    }
+
+    func declineNearbyPeer() {
+        // One request per opt-in window; declining stops discovery to prevent prompt spam.
+        cancelNearbyPairing()
+    }
+
+    func confirmNearbyCode() {
+        guard nearbyActive, !busy, nearbyComparisonCode != nil, nearbyTicketID == nil,
+              let code = nearbyComparisonCode, let handshake, let session = nearbySession,
+              let peer = session.connectedPeers.first else { return }
+        do { try handshake.confirmComparison(code: code) }
+        catch { abortNearby("Secure code confirmation failed. Cancel and try again."); return }
+        let generation = nearbyGeneration
+        busy = true
+        nearbyStatus = "Preparing secure invitation…"
+        Task {
+            defer { busy = false }
+            do {
+                let result = try await CompanionCommand.run(["action": "create_pairing"])
+                guard let ticket = result["ticket_id"] as? String,
+                      let url = result["qr_url"] as? String else { throw CompanionError.invalidResponse }
+                guard nearbyActive && generation == nearbyGeneration else {
+                    _ = try? await CompanionCommand.run(["action": "cancel_pairing", "ticket_id": ticket])
+                    return
+                }
+                let sealed = try handshake.sealInvitation(url)
+                nearbyTicketID = ticket
+                ticketID = ticket
+                try session.send(sealed, toPeers: [peer], with: .reliable)
+                nearbyInvitationSent = true
+                pairingDeviceCount = devices.count
+                nearbyStatus = "Invitation sent securely. Waiting for the iPhone to connect…"
+                nearbyComparisonCode = nil
+                error = nil
+                refresh()
+            } catch { abortNearby("Nearby pairing could not be completed.") }
+        }
+    }
+
+    func cancelNearbyPairing() {
+        guard nearbyActive else { return }
+        finishNearby(success: false)
+    }
+
     func revoke(_ device: [String: Any]) {
         guard let id = device["id"] as? String else { return }
         Task {
@@ -149,12 +246,89 @@ final class CompanionModel: ObservableObject {
             secondsRemaining = max(0, Int(pairingExpiry.timeIntervalSinceNow.rounded(.up)))
             if qrImage != nil && secondsRemaining == 0 { cancelPairing() }
         }
+        if let nearbyDeadline {
+            nearbySecondsRemaining = max(0, Int(nearbyDeadline.timeIntervalSinceNow.rounded(.up)))
+            if nearbySecondsRemaining == 0 { cancelNearbyPairing() }
+        }
     }
 
     func becameInactive() {
         isActive = false
         interactionGeneration += 1
         cancelPairing()
+
+    }
+
+    private func accept(_ peer: MCPeerID, context: Data?, handler: @escaping (Bool, MCSession?) -> Void,
+                        from source: MCNearbyServiceAdvertiser) {
+        guard nearbyActive, source === advertiser, invitationHandler == nil, acceptedPeer == nil,
+              nearbySession?.connectedPeers.isEmpty == true, (context?.count ?? 0) <= 256 else {
+            handler(false, nil)
+            return
+        }
+        advertiser?.stopAdvertisingPeer()
+        invitationHandler = handler
+        acceptedPeer = peer
+        let suppliedName = context.flatMap { String(data: $0, encoding: .utf8) } ?? peer.displayName
+        let safeName = String(suppliedName.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(80))
+        nearbyPeerName = safeName.isEmpty ? "Nearby iPhone" : safeName
+        showingNearbyRequest = true
+        nearbyStatus = "Review the device name before accepting."
+    }
+
+    private func handleNearbyMessage(_ data: Data, from peer: MCPeerID) {
+        guard nearbyActive, let handshake, nearbySession?.connectedPeers.contains(peer) == true else { return }
+        do {
+            if let reply = try handshake.receive(data) {
+                try nearbySession?.send(reply, toPeers: [peer], with: .reliable)
+            }
+            if let code = handshake.comparisonCode {
+                nearbyComparisonCode = code
+                nearbyStatus = "Compare this code with the iPhone."
+            }
+        } catch { abortNearby("Secure handshake failed. Cancel and try again.") }
+    }
+
+    private func abortNearby(_ message: String) {
+        error = message
+        finishNearby(success: false)
+    }
+
+    private func stopNearbyTransport() {
+        advertiser?.stopAdvertisingPeer()
+        advertiser?.delegate = nil
+        advertiser = nil
+        acceptedPeer = nil
+        nearbySession?.disconnect()
+        nearbySession?.delegate = nil
+        nearbySession = nil
+        handshake = nil
+    }
+
+    private func finishNearby(success: Bool) {
+        let ticket = success ? nil : nearbyTicketID
+        nearbyGeneration += 1
+        nearbyActive = false
+        nearbyDeadline = nil
+        nearbySecondsRemaining = 0
+        nearbyComparisonCode = nil
+        nearbyPeerName = nil
+        showingNearbyRequest = false
+        nearbyInvitationSent = false
+        nearbyStatus = success ? "Device paired successfully." : "Nearby pairing cancelled."
+        invitationHandler?(false, nil)
+        invitationHandler = nil
+        stopNearbyTransport()
+        nearbyTicketID = nil
+        if let ticket {
+            ticketID = nil
+            Task {
+                _ = try? await CompanionCommand.run(["action": "cancel_pairing", "ticket_id": ticket])
+                refresh()
+            }
+        } else if success {
+            ticketID = nil
+        }
     }
 
     private func show(_ error: Error) {
@@ -169,6 +343,67 @@ final class CompanionModel: ObservableObject {
         guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
               let cgImage = CIContext().createCGImage(output, from: output.extent) else { return nil }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+}
+
+extension CompanionModel: MCNearbyServiceAdvertiserDelegate, MCSessionDelegate {
+    nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID,
+                                withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        Task { @MainActor in self.accept(peerID, context: context, handler: invitationHandler, from: advertiser) }
+    }
+
+    nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
+        Task { @MainActor in
+            guard self.advertiser === advertiser else { return }
+            self.abortNearby("Nearby discovery is unavailable. Check Local Network access and try again.")
+        }
+    }
+
+    nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        Task { @MainActor in
+            guard self.nearbyActive, session === self.nearbySession, self.acceptedPeer == peerID else { return }
+            switch state {
+            case .connected:
+                guard session.encryptionPreference == .required else {
+                    self.abortNearby("Secure nearby transport is unavailable.")
+                    return
+                }
+                self.handshake = NearbyHandshake(role: .mac)
+                self.nearbyStatus = "Establishing an encrypted pairing session…"
+            case .notConnected:
+                if self.nearbyInvitationSent {
+                    self.stopNearbyTransport()
+                    self.nearbyStatus = "Waiting for the iPhone to finish pairing…"
+                } else {
+                    self.abortNearby("The iPhone disconnected. You can try nearby pairing again.")
+                }
+            case .connecting:
+                self.nearbyStatus = "Connecting securely…"
+            @unknown default:
+                self.abortNearby("Nearby pairing could not be completed.")
+            }
+        }
+    }
+
+    nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        Task { @MainActor in
+            guard session === self.nearbySession, self.acceptedPeer == peerID else { return }
+            self.handleNearbyMessage(data, from: peerID)
+        }
+    }
+
+    nonisolated func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {
+        stream.close()
+        Task { @MainActor in if session === self.nearbySession && self.acceptedPeer == peerID { self.abortNearby("Unexpected nearby data received.") } }
+    }
+
+    nonisolated func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {
+        progress.cancel()
+        Task { @MainActor in if session === self.nearbySession && self.acceptedPeer == peerID { self.abortNearby("Unexpected nearby data received.") } }
+    }
+
+    nonisolated func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {
+        if error != nil { Task { @MainActor in if session === self.nearbySession && self.acceptedPeer == peerID { self.abortNearby("Nearby transfer failed.") } } }
     }
 }
 
@@ -202,6 +437,7 @@ enum CompanionCommand {
 }
 
 struct CompanionView: View {
+    @Binding var appearance: String
     @StateObject private var model = CompanionModel()
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedDevice: [String: Any]?
@@ -237,11 +473,11 @@ struct CompanionView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .preferredColorScheme(nil)
         .onReceive(inactive) { _ in model.becameInactive() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.becameActive() }
         .onAppear { model.becameActive() }
-        .onDisappear { model.becameInactive() }
+        .onDisappear { model.becameInactive(); model.cancelNearbyPairing() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in model.cancelNearbyPairing() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in model.tick() }
         .alert("Revoke this device?", isPresented: Binding(get: { selectedDevice != nil }, set: { if !$0 { selectedDevice = nil } })) {
             Button("Cancel", role: .cancel) { selectedDevice = nil }
@@ -251,6 +487,12 @@ struct CompanionView: View {
             }
         } message: {
             Text("\(selectedDevice?["name"] as? String ?? "This device") will lose access to Hermes immediately.")
+        }
+        .alert("Allow nearby pairing?", isPresented: $model.showingNearbyRequest) {
+            Button("Allow This Device") { model.approveNearbyPeer() }
+            Button("Decline", role: .cancel) { model.declineNearbyPeer() }
+        } message: {
+            Text("\(model.nearbyPeerName ?? "An iPhone") is requesting to pair. The device name is supplied by the phone and may be misleading; allow only the iPhone you are holding.")
         }
     }
 
@@ -265,6 +507,13 @@ struct CompanionView: View {
                 Text("Connect and manage your iPhone devices").font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
+            Picker("Appearance", selection: $appearance) {
+                Text("Follow System").tag("system")
+                Text("Light").tag("light")
+                Text("Dark").tag("dark")
+            }
+            .pickerStyle(.menu)
+            .help("Choose the app appearance")
             Button { model.refresh() } label: { Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .semibold)).frame(width: 38, height: 38) }
                 .buttonStyle(.bordered).help("Refresh status and devices")
         }
@@ -292,7 +541,21 @@ struct CompanionView: View {
     private var pairingCard: some View {
         VStack(spacing: 13) {
             cardTitle("Pair a device", icon: "qrcode")
-            if model.pairingActive, let image = model.qrImage {
+            if model.nearbyComparisonCode != nil {
+                Image(systemName: "checkmark.shield.fill").font(.system(size: 44)).foregroundStyle(.blue.gradient).frame(height: 94)
+                Text("Compare the codes").font(.callout.weight(.semibold))
+                Text(model.nearbyComparisonCode ?? "------").font(.system(size: 34, weight: .bold, design: .monospaced)).tracking(3).foregroundStyle(.primary)
+                Text("Proceed only if the iPhone shows the same six digits.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button { model.confirmNearbyCode() } label: {
+                    Label("Codes match — Pair", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+                Button("Cancel nearby pairing", role: .cancel) { model.cancelNearbyPairing() }.controlSize(.small)
+            } else if model.nearbyPairingActive {
+                Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 48, weight: .light)).foregroundStyle(.blue.gradient).frame(height: 96)
+                Text(model.nearbyStatus).font(.callout.weight(.medium)).multilineTextAlignment(.center)
+                Text("Expires in \(model.nearbySecondsRemaining / 60):\(String(format: "%02d", model.nearbySecondsRemaining % 60))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Button("Cancel nearby pairing", role: .cancel) { model.cancelNearbyPairing() }.controlSize(.small)
+            } else if model.pairingActive, let image = model.qrImage {
                 Image(nsImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 160, height: 160)
                     .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12))
                 Text("Scan with your iPhone camera").font(.callout.weight(.medium))
@@ -302,9 +565,14 @@ struct CompanionView: View {
                 Image(systemName: "iphone.gen3.radiowaves.left.and.right").font(.system(size: 50, weight: .light)).foregroundStyle(.blue.gradient).frame(height: 165)
                 Text("Create a temporary pairing code").font(.callout.weight(.medium))
                 Text("The QR code is valid for five minutes.").font(.caption).foregroundStyle(.secondary)
-                Button { model.createPairing() } label: {
-                    Label(model.busy ? "Creating…" : "Pair device", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+                HStack {
+                    Button { model.createPairing() } label: {
+                        Label(model.busy ? "Creating…" : "Pair device", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
+                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy || model.nearbyPairingActive)
+                    Button { model.startNearbyPairing() } label: {
+                        Label("Pair nearby", systemImage: "dot.radiowaves.left.and.right").frame(maxWidth: .infinity)
+                    }.buttonStyle(.bordered).controlSize(.large).disabled(model.busy || model.pairingActive)
+                }
             }
         }
         .frame(maxWidth: .infinity, minHeight: 278)
