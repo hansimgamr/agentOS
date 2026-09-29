@@ -35,6 +35,7 @@ struct RootView: View {
                 showingSearch = false
                 openConversation(session.id)
             }
+            .presentationDragIndicator(.visible)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openAgentSearch)) { _ in showingSearch = true }
         .onChange(of: openSearchRequested, initial: true) { _, requested in
@@ -573,19 +574,21 @@ private struct AppSearchView: View {
             }
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Chats and messages")
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VoiceSearchField(text: $query, recording: voice.isRecording || voice.isStarting) {
+                    if voice.isRecording || voice.isStarting { voice.stop() }
+                    else {
+                        queryPrefix = query.isEmpty ? "" : query + " "
+                        voice.start()
+                    }
+                }
+                .frame(height: 44)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        if voice.isRecording || voice.isStarting { voice.stop() }
-                        else {
-                            queryPrefix = query.isEmpty ? "" : query + " "
-                            voice.start()
-                        }
-                    } label: {
-                        Image(systemName: voice.isRecording || voice.isStarting ? "stop.circle.fill" : "mic")
-                    }
-                    .accessibilityLabel(voice.isRecording || voice.isStarting ? "Stop search dictation" : "Dictate search")
+                    Button("Close search", systemImage: "xmark") { voice.stop(); dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { voice.stop(); dismiss() } }
             }
@@ -609,6 +612,53 @@ private struct AppSearchView: View {
                     if !Task.isCancelled { self.error = error.localizedDescription; searching = false }
                 }
             }
+        }
+    }
+}
+
+// Use Apple's search text field with a persistent dictation accessory.
+private struct VoiceSearchField: UIViewRepresentable {
+    @Binding var text: String
+    let recording: Bool
+    let toggleDictation: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UISearchTextField {
+        let field = UISearchTextField()
+        field.delegate = context.coordinator
+        field.placeholder = "Chats and messages"
+        field.accessibilityLabel = "Search chats and messages"
+        field.returnKeyType = .search
+        field.font = .preferredFont(forTextStyle: .body)
+        field.adjustsFontForContentSizeCategory = true
+        field.addTarget(context.coordinator, action: #selector(Coordinator.textChanged(_:)), for: .editingChanged)
+        let microphone = UIButton(type: .system)
+        microphone.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        microphone.addTarget(context.coordinator, action: #selector(Coordinator.toggleVoice), for: .touchUpInside)
+        field.rightView = microphone
+        field.rightViewMode = .always
+        field.clearButtonMode = .never
+        return field
+    }
+
+    func updateUIView(_ field: UISearchTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text { field.text = text }
+        if let microphone = field.rightView as? UIButton {
+            microphone.setImage(UIImage(systemName: recording ? "stop.circle.fill" : "mic"), for: .normal)
+            microphone.accessibilityLabel = recording ? "Stop search dictation" : "Dictate search"
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: VoiceSearchField
+        init(_ parent: VoiceSearchField) { self.parent = parent }
+        @objc func textChanged(_ field: UITextField) { parent.text = field.text ?? "" }
+        @objc func toggleVoice() { parent.toggleDictation() }
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
+            return true
         }
     }
 }
