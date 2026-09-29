@@ -54,6 +54,7 @@ enum HermesError: LocalizedError {
         case .invalidURL: "Enter a valid Hermes API URL."
         case .missingKey: "Pair this device with the QR code shown on your Mac."
         case .keychainFailure: "Could not save this device's access in Keychain."
+        case .badResponse(401, _): "Please pair this device again with your Mac."
         case let .badResponse(code, message): "Hermes returned HTTP \(code): \(message)"
         case .malformedResponse: "Hermes returned an unreadable response."
         case .noSession: "Create a conversation before sending a message."

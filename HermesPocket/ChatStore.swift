@@ -18,7 +18,8 @@ final class ChatStore {
     var isConnected = false
     var deletingSessionIDs: Set<String> = []
     var isSending = false
-    var status = "Connect to your Hermes agent"
+    var status = "Not connected"
+    var needsPairing = false
     var error: String?
     var draft = ""
     var pendingImage: PendingImage?
@@ -77,6 +78,7 @@ final class ChatStore {
 
     func connect() async {
         let revision = connectionRevision
+        guard !apiKey.isEmpty else { isConnected = false; needsPairing = false; error = nil; status = "Not connected"; return }
         guard var api else { error = apiKey.isEmpty ? HermesError.missingKey.localizedDescription : HermesError.invalidURL.localizedDescription; return }
         status = "Connecting…"
         do {
@@ -94,6 +96,7 @@ final class ChatStore {
             guard revision == connectionRevision else { return }
             try await api.checkConnection()
             guard revision == connectionRevision else { return }
+            needsPairing = false
             isConnected = true
             status = "Connected to Hermes"
             error = nil
@@ -119,8 +122,17 @@ final class ChatStore {
             guard revision == connectionRevision else { return }
             isConnected = false
             status = "Hermes is unavailable"
-            self.error = error.localizedDescription
+            recordError(error)
         }
+    }
+
+    private func recordError(_ failure: Error) {
+        if case HermesError.badResponse(401, _) = failure, !apiKey.isEmpty {
+            needsPairing = true
+            isConnected = false
+            status = "Pair this device again"
+        }
+        error = failure.localizedDescription
     }
 
     func preparePair(from url: URL) {
@@ -158,7 +170,9 @@ final class ChatStore {
         draft = ""
         isSending = false
         isConnected = false
-        status = "Connect to your Hermes agent"
+        needsPairing = false
+        error = nil
+        status = "Not connected"
     }
 
     func confirmPairing(_ candidate: PairingQR) async {
@@ -193,7 +207,7 @@ final class ChatStore {
             toolActivity = nil
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: rotationDateKey)
             await connect()
-        } catch { status = wasConnected ? previousStatus : "Pairing failed"; self.error = error.localizedDescription }
+        } catch { status = wasConnected ? previousStatus : "Pairing failed"; recordError(error) }
     }
 
     func rotateDeviceKey() async {
@@ -219,7 +233,7 @@ final class ChatStore {
             error = nil
         } catch {
             guard apiKey == credential, KeychainStore.readProfile() == oldProfile else { return }
-            self.error = error.localizedDescription
+            recordError(error)
         }
     }
 
@@ -290,7 +304,7 @@ final class ChatStore {
             error = nil
         } catch {
             guard selectedSessionID == sessionID else { return }
-            self.error = error.localizedDescription
+            recordError(error)
         }
     }
 
@@ -333,7 +347,7 @@ final class ChatStore {
                     return
                 }
                 restoreDraft(originalDraft, image: image)
-                self.error = error.localizedDescription
+                recordError(error)
                 finishSend(sendID)
                 return
             }
@@ -409,6 +423,7 @@ final class ChatStore {
                     }
                 }
             }
+            if case HermesError.badResponse(401, _) = error { recordError(error) }
             finishSend(sendID)
         }
     }
@@ -496,7 +511,7 @@ final class ChatStore {
             try await api.respondToApproval(runID: approval.runID, requestID: approval.requestID, choice: choice)
             pendingApproval = nil
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch { recordError(error) }
     }
 
     private func handle(event: String, payload: [String: Any], messageID: String) {

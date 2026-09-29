@@ -195,6 +195,20 @@ struct RootView: View {
                     }
                 }
             }
+            .overlay {
+                if store.needsPairing {
+                    ContentUnavailableView {
+                        Label("Pair this device again", systemImage: "laptopcomputer")
+                    } description: {
+                        Text("Your connection needs a fresh start. Pair with your Mac to continue.")
+                    } actions: {
+                        NearbyPairingButton()
+                        ScanPairingButton()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemBackground))
+                }
+            }
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -236,16 +250,16 @@ private struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = store.error {
+            if let error = store.error, !store.needsPairing {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal).padding(.vertical, 8).background(.red.opacity(0.07))
             }
             if !store.isConnected {
                 ContentUnavailableView {
-                    Label("Connect to Hermes", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label(store.needsPairing ? "Pair this device again" : "Connect to Hermes", systemImage: "laptopcomputer")
                 } description: {
-                    Text(store.status + "\nOpen Settings to pair with your Mac.")
+                    Text(store.needsPairing ? "Your connection needs a fresh start. Pair with your Mac to continue." : store.status + "\nOpen Settings to pair with your Mac.")
                 } actions: {
                     VStack(spacing: 12) {
                         ScanPairingButton()
@@ -474,15 +488,15 @@ private struct SettingsView: View {
                         if checking {
                             ProgressView().accessibilityLabel("Connecting")
                         } else {
-                            Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            Image(systemName: store.isConnected ? "checkmark.circle.fill" : store.apiKey.isEmpty ? "circle" : "xmark.circle.fill")
                                 .font(.title2)
-                                .foregroundStyle(store.isConnected ? .green : .red)
+                                .foregroundStyle(store.isConnected ? Color.green : store.apiKey.isEmpty ? Color.secondary : Color.red)
                                 .accessibilityHidden(true)
                         }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(checking ? "Connecting…" : store.isConnected ? "Connected" : "Not connected")
                                 .font(.headline)
-                            if !store.status.isEmpty {
+                            if !store.status.isEmpty && store.status != "Not connected" {
                                 Text(store.status).font(.footnote).foregroundStyle(.secondary)
                             }
                         }
@@ -511,7 +525,7 @@ private struct SettingsView: View {
                         Text("Tap Scan QR Code and scan the invitation shown by agentOS Companion on your Mac. Review the Mac's identity before trusting it.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red) }
+                    if let error = store.error, !store.needsPairing { Text(error).font(.footnote).foregroundStyle(.red) }
                     #endif
                     if !store.isConnected {
                         ScanPairingButton()

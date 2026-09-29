@@ -21,6 +21,19 @@ import Foundation
             precondition(store.draft == "keep this" && store.sessions.first?.id == "old-session")
         }
 
+        let revoked = setup()
+        revoked.isConnected = true
+        revoked.selectedSessionID = "old-session"
+        revoked.draft = "keep my draft"
+        PairingTestControl.sendError = HermesError.badResponse(401, "unauthorized")
+        await revoked.send()
+        precondition(revoked.needsPairing && !revoked.isConnected)
+        precondition(revoked.error == "Please pair this device again with your Mac.")
+        revoked.disconnect()
+        precondition(!revoked.needsPairing && revoked.error == nil && revoked.status == "Not connected")
+        await revoked.connect()
+        precondition(revoked.error == nil && revoked.status == "Not connected")
+
         let paired = setup(); paired.draft = "do not send this to the new server"; paired.sessions = [ChatSession(id: "old-session")]
         paired.preparePair(from: candidateURL)
         await paired.confirmPairing(paired.pairingCandidate!)
