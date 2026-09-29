@@ -157,7 +157,7 @@ struct HermesAPI: Sendable {
     }
 
     func createSession() async throws -> ChatSession {
-        let data = try await post("/api/sessions", json: ["title": "New conversation"])
+        let data = try await post("/api/sessions", json: [:])
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let session = root["session"] as? [String: Any],
               let id = session["id"] as? String else { throw HermesError.malformedResponse }
