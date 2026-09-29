@@ -24,6 +24,6 @@ pkgbuild --analyze --root "$STAGE/root" "$STAGE/components.plist"
 pkgbuild --root "$STAGE/root" --component-plist "$STAGE/components.plist" \
   --identifier com.agentos.companion.installer --version "$VERSION" \
   --install-location / --ownership recommended "$OUTPUT"
-shasum -a 256 "$OUTPUT" > "$OUTPUT.sha256"
+(cd "$(dirname "$OUTPUT")" && shasum -a 256 "$(basename "$OUTPUT")") > "$OUTPUT.sha256"
 echo "Installer: $OUTPUT"
 echo "Development package: not Developer ID signed or notarized."
